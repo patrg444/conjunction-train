@@ -106,3 +106,9 @@ dist/
 
 # Large mf.sh file
 mf.sh
+
+# BFG reports
+..bfg-report/
+
+# Removed sensitive/large data
+feature_verification_output/
