@@ -1,0 +1,47 @@
+Model: "sequential"
+_________________________________________________________________
+ Layer (type)                Output Shape              Param #   
+=================================================================
+ audio_input (InputLayer)    [(None, None, 88)]        0         
+                                                                 
+ masking (Masking)           (None, None, 88)          0         
+                                                                 
+ bidirectional (Bidirection  (None, None, 256)         221184    
+ al)                                                             
+                                                                 
+ dropout (Dropout)           (None, None, 256)         0         
+                                                                 
+ bidirectional_1 (Bidirecti  (None, None, 128)         164352    
+ onal)                                                           
+                                                                 
+ audio_attention (AttentionW  (None, 128)              16512     
+ ithMaskLayer)                                                   
+                                                                 
+ video_input (InputLayer)    [(None, None, 128)]       0         
+                                                                 
+ masking_1 (Masking)         (None, None, 128)         0         
+                                                                 
+ bidirectional_2 (Bidirecti  (None, None, 512)         787456    
+ onal)                                                           
+                                                                 
+ dropout_1 (Dropout)         (None, None, 512)         0         
+                                                                 
+ bidirectional_3 (Bidirecti  (None, None, 256)         492288    
+ onal)                                                           
+                                                                 
+ video_attention (AttentionW  (None, 256)              65792     
+ ithMaskLayer)                                                   
+                                                                 
+ concatenate (Concatenate)   (None, 384)               0         
+                                                                 
+ dense (Dense)               (None, 128)               49280     
+                                                                 
+ dropout_2 (Dropout)         (None, 128)               0         
+                                                                 
+ dense_1 (Dense)             (None, 6)                 774       
+                                                                 
+=================================================================
+Total params: 1,797,638
+Trainable params: 1,797,638
+Non-trainable params: 0
+_________________________________________________________________

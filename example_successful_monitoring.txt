@@ -1,0 +1,61 @@
+============================================================
+          CONTINUOUS G5 TRAINING MONITOR
+============================================================
+Monitoring G5 instance: 18.208.166.91
+Polling interval: 30 seconds
+Press Ctrl+C to exit
+============================================================
+======== G5 TRAINING MONITOR - Sat Apr 19 14:35:22 PDT 2025 ========
+[1/5] TRAINING PROCESS STATUS
+✅ Training process active (PID: 7824)
+
+[2/5] DATASET STATUS
+RAVDESS features: 1.6 GB
+CREMA-D features: 982.4 MB
+Laughter manifest: 501 entries
+Normalization files: 2
+
+[3/5] GPU STATUS
+GPU Utilization: 78% (good)
+Memory Usage: 15624 MB / 23028 MB (67%)
+GPU Temperature: 61°C
+
+[4/5] TRAINING PROGRESS
+Progress: [================>                          ] 32% (32/100)
+Running for: 2.8h, Remaining: 6.1h
+Current loss: 0.4326, Emotion acc: 0.7894, Laugh acc: 0.8542
+Estimated completion: 2025-04-19 20:43:16
+
+[5/5] TENSORBOARD STATUS
+TensorBoard running (PID: 7623)
+
+============================================================
+Next update in 30 seconds... (Press Ctrl+C to exit)
+============================================================
+======== G5 TRAINING MONITOR - Sat Apr 19 14:35:52 PDT 2025 ========
+[1/5] TRAINING PROCESS STATUS
+✅ Training process active (PID: 7824)
+
+[2/5] DATASET STATUS
+RAVDESS features: 1.6 GB
+CREMA-D features: 982.4 MB
+Laughter manifest: 501 entries
+Normalization files: 2
+
+[3/5] GPU STATUS
+GPU Utilization: 81% (good)
+Memory Usage: 15628 MB / 23028 MB (67%)
+GPU Temperature: 62°C
+
+[4/5] TRAINING PROGRESS
+Progress: [================>                          ] 32% (32/100)
+Running for: 2.9h, Remaining: 6.0h
+Current loss: 0.4289, Emotion acc: 0.7912, Laugh acc: 0.8563
+Estimated completion: 2025-04-19 20:42:53
+
+[5/5] TENSORBOARD STATUS
+TensorBoard running (PID: 7623)
+
+============================================================
+Next update in 30 seconds... (Press Ctrl+C to exit)
+============================================================

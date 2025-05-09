@@ -1,0 +1,6 @@
+scripts/train_branched_attention.py
+scripts/sequence_data_generator.py
+scripts/utils.py
+requirements.txt
+ravdess_features_facenet/*
+crema_d_features_facenet/*

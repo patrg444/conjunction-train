@@ -1,0 +1,2 @@
+Model,Epochs Completed,Latest Val Accuracy,Best Val Accuracy,Best Epoch,Trend
+branched_regularization_sync_aug_tcn_large_fixed_v20250328_060012,13,0.6213,0.6316,10,0.013800

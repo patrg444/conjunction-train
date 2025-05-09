@@ -1,0 +1,51 @@
+name: Test Framework
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install seaborn matplotlib numpy pandas scikit-learn torch torchvision torchaudio pytorch-lightning torchmetrics transformers pytest
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi # Install base requirements if exist
+        if [ -f emotion_comparison/requirements.txt ]; then pip install -r emotion_comparison/requirements.txt; fi
+        # Install PyTorch Video if needed for R3D test (assuming it's required)
+        # pip install pytorchvideo
+
+    - name: Run Unit Tests (Forward Pass Checks)
+      run: |
+        pytest tests/test_r3d_forward_pass.py # Assuming this was moved/renamed to tests/
+        pytest tests/test_smile_forward.py
+        pytest tests/test_text_forward.py
+
+    - name: Run framework test (Emotion Comparison)
+      run: |
+        mkdir -p downsampled_videos/RAVDESS
+        mkdir -p downsampled_videos/CREMA-D-audio-complete
+        # Create dummy video files for testing
+        touch downsampled_videos/RAVDESS/dummy_video1.mp4
+        touch downsampled_videos/RAVDESS/dummy_video2.mp4
+        chmod +x ./run_emotion_comparison.sh
+        ./run_emotion_comparison.sh --test --auto
+    
+    - name: Verify results
+      run: |
+        # Check if basic results were created
+        [ -d "comparison_results/RAVDESS_TEST_results" ] && echo "Results directory exists" || exit 1
+        [ -f "comparison_results/RAVDESS_TEST_results/comparison_summary.txt" ] && echo "Summary file exists" || exit 1
+        [ -d "comparison_results/RAVDESS_TEST_results/confusion_matrices" ] && echo "Confusion matrices directory exists" || exit 1

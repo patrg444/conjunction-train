@@ -1,0 +1,18 @@
+# Binary Laughter Detection Training Config
+
+manifest_path: datasets/vocalsounds/laughter_binary_manifest.csv
+log_dir: runs/laughter_binary_wavlm
+checkpoint_dir: checkpoints/laughter_binary_wavlm
+
+# Training hyperparameters
+epochs: 25
+batch_size: 32
+learning_rate: 2e-5
+val_split: 0.2
+
+# Model
+backbone: wavlm
+num_classes: 2
+
+# Audio
+sample_rate: 16000

@@ -1,0 +1,889 @@
+#!/usr/bin/env python3
+"""
+Multimodal preprocessing module for extracting synchronized audio and video features.
+This module extracts audio directly from video files to ensure perfect time alignment
+between audio and video modalities.
+"""
+
+import os
+import sys
+import glob
+import shutil
+import logging
+import subprocess
+import numpy as np
+import cv2
+from tqdm import tqdm
+from moviepy.editor import VideoFileClip, AudioFileClip
+from deepface import DeepFace
+from deepface.DeepFace import analyze  # Import the analyze function
+from multiprocessing import Pool
+import time  # Import the time module
+
+# Import our custom ARFF parser
+from utils import load_arff_features
+
+# Configure logging - separate file and console loggers
+def configure_logging(verbose=False):
+    """Configure logging with different levels for file and console output.
+    
+    Args:
+        verbose: If True, show INFO level logs in console. If False, only show a minimal
+                progress summary and errors in console.
+    """
+    # Create formatters
+    file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    console_formatter = logging.Formatter('%(message)s')
+    
+    # Create handlers
+    file_handler = logging.FileHandler("multimodal_preprocess.log")
+    file_handler.setLevel(logging.INFO)  # Detailed logging to file
+    file_handler.setFormatter(file_formatter)
+    
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(console_formatter)
+    if verbose:
+        console_handler.setLevel(logging.INFO)  # Show all info in console when verbose
+    else:
+        console_handler.setLevel(logging.WARNING)  # Only warnings/errors in console when not verbose
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)  # Capture all INFO+ logs
+    root_logger.handlers = []  # Remove any existing handlers
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    
+    return root_logger
+
+# Set up logging with default non-verbose mode
+logger = configure_logging(verbose=False)
+
+# Global cache for DeepFace embeddings
+_deepface_cache = {}
+
+def extract_audio_from_video(video_path, output_dir="temp_extracted_audio", codec="pcm_s16le"):
+    """Extract audio track from video file and save as WAV.
+    
+    Args:
+        video_path: Path to the video file
+        output_dir: Directory to save extracted audio
+        codec: Audio codec to use for extraction
+        
+    Returns:
+        Path to the extracted audio file or None if extraction fails
+    """
+    # Create unique filename based on video filename
+    video_basename = os.path.basename(video_path)
+    audio_filename = os.path.splitext(video_basename)[0] + ".wav"
+    audio_path = os.path.join(output_dir, audio_filename)
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    try:
+        # Extract audio using moviepy
+        video = VideoFileClip(video_path)
+        audio = video.audio
+        if audio is not None:
+            audio.write_audiofile(audio_path, codec=codec, verbose=False, logger=None)
+            video.close()
+
+            # Add temporary code to check audio duration
+            try:
+                audio_clip = AudioFileClip(audio_path)
+                logging.info(f"Extracted audio duration: {audio_clip.duration} seconds") # Debug print
+                audio_clip.close()
+            except Exception as e:
+                logging.error(f"Error checking audio duration: {str(e)}")
+
+            return audio_path
+        else:
+            logging.warning(f"No audio track found in {video_path}")
+            video.close()
+            return None
+    except Exception as e:
+        logging.error(f"Error extracting audio from {video_path}: {str(e)}")
+        return None
+
+
+def get_embedding_dimension(model_name):
+    """Returns the embedding dimension for a given DeepFace model."""
+    if model_name == "VGG-Face":
+        return 4096
+    elif model_name == "Facenet":
+        return 128
+    elif model_name == "Facenet512":
+        return 512
+    elif model_name == "OpenFace":
+        return 128
+    elif model_name == "DeepFace":
+        return 4096
+    elif model_name == "ArcFace":
+        return 512
+    else:
+        raise ValueError(f"Unsupported model: {model_name}")
+
+
+def select_primary_face(embedding_objs):
+    """Selects the primary face embedding from a list of DeepFace embeddings.
+
+    Args:
+        embedding_objs: A list of embedding objects returned by DeepFace.represent
+
+    Returns:
+        The embedding of the primary face (largest bounding box area)
+    """
+    # Select the face with the largest bounding box area
+    if len(embedding_objs) == 1:
+        return embedding_objs[0]["embedding"]
+
+    areas = []
+    for obj in embedding_objs:
+        x, y, w, h = obj["facial_area"].values()
+        areas.append((w * h, obj["embedding"]))
+
+    # Sort by area (descending) and take the embedding with largest area
+    primary_embedding = max(areas, key=lambda x: x[0])[1]
+    return primary_embedding
+
+
+def extract_frame_level_video_features(video_path, model_name="VGG-Face", fps=None, use_cache=True):
+    """Extract features from video frames without averaging.
+
+    Args:
+        video_path: Path to the video file
+        model_name: Name of the DeepFace model to use
+        fps: Frames per second to sample (if None, uses video's original fps)
+        use_cache: Whether to use caching for DeepFace embeddings
+
+    Returns:
+        Tuple of (frame_features, timestamps)
+    """
+    # Create cache key based on video path and frame index
+    def get_cache_key(video_path, frame_idx):
+        return f"{video_path}_{model_name}_{frame_idx}"
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        logging.error(f"Failed to open video: {video_path}")
+        return None, None
+
+    # Get video metadata
+    video_fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = frame_count / video_fps if video_fps > 0 else 0
+
+    logging.info(f"Video {video_path}: {frame_count} frames, {video_fps} FPS, {duration:.2f}s duration")
+
+    # Determine sampling rate (use original or specified fps)
+    sampling_fps = fps if fps else video_fps
+
+    # Calculate frame indices to process
+    frame_indices = []
+    timestamps = []
+
+    # Sample frames at consistent intervals
+    for t in np.arange(0, duration, 1/sampling_fps):
+        frame_idx = int(t * video_fps)
+        if frame_idx < frame_count:
+            frame_indices.append(frame_idx)
+            timestamps.append(t)
+
+    logging.info(f"Processing {len(frame_indices)} frames at {sampling_fps} FPS")
+
+    # Extract features for each selected frame
+    frame_features = []
+    for idx in tqdm(frame_indices, desc=f"Extracting video features ({model_name})"):
+        cache_key = get_cache_key(video_path, idx)
+
+        # Check cache first if enabled
+        if use_cache and cache_key in _deepface_cache:
+            frame_features.append(_deepface_cache[cache_key])
+            continue
+
+        # Not in cache, need to process
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame = cap.read()
+        if ret:
+            # Check if the frame is valid
+            if frame is None:
+                logging.warning(f"Invalid frame {idx} from {video_path}")
+                frame_features.append(np.zeros(get_embedding_dimension(model_name)))
+                continue
+
+            # Use DeepFace.analyze to check for face detection *before* retrying
+            try:
+                analyze_result = DeepFace.analyze(img_path=frame, actions=['detection'], enforce_detection=False, silent=True)
+                if len(analyze_result) == 0 or "face_1" not in analyze_result[0]:
+                    logging.warning(f"No faces detected in frame {idx} of {video_path}.")
+                    frame_features.append(np.zeros(get_embedding_dimension(model_name)))
+                    continue  # Skip to the next frame
+            except Exception as e:
+                logging.error(f"Error analyzing frame {idx} of {video_path}: {str(e)}")
+                frame_features.append(np.zeros(get_embedding_dimension(model_name)))
+                continue
+
+            retries = 0
+            max_retries = 3
+            while retries < max_retries:
+                try:
+                    embedding_objs = DeepFace.represent(img_path=frame, model_name=model_name, enforce_detection=False)
+                    
+                    # Try/except for select_primary_face
+                    try:
+                        embedding = select_primary_face(embedding_objs)
+                    except Exception as e:
+                        logging.error(f"Error in select_primary_face at frame {idx}: {str(e)}")
+                        embedding = np.zeros(get_embedding_dimension(model_name))
+
+                    # Cache the result if enabled
+                    if use_cache:
+                        _deepface_cache[cache_key] = embedding
+
+                    frame_features.append(embedding)
+                    break  # Exit loop if successful
+                except Exception as e:
+                    retries += 1
+                    logging.error(f"DeepFace.represent ({model_name}) error at frame {idx}, attempt {retries}/{max_retries}: {str(e)}")
+                    time.sleep(0.5)  # Wait before retrying
+            if retries == max_retries:
+                logging.error(f"Giving up on frame {idx} after {max_retries} attempts.")
+                frame_features.append(np.zeros(get_embedding_dimension(model_name)))
+        else:
+            logging.warning(f"Failed to read frame {idx} from {video_path}")
+            frame_features.append(np.zeros(get_embedding_dimension(model_name)))
+
+    cap.release()
+    return frame_features, timestamps
+
+
+def extract_frame_level_audio_features(audio_path, config_file="opensmile-3.0.2-macos-armv8/opensmile-3.0.2-macos-armv8/config/egemaps/v02/eGeMAPSv02.conf", opensmile_path="/Users/patrickgloria/conjunction-train/opensmile-3.0.2-macos-armv8/opensmile-3.0.2-macos-armv8/bin/SMILExtract", temp_dir="temp_extracted_audio"):
+    """Extract audio features using openSMILE with eGeMAPS feature set.
+
+    Args:
+        audio_path: Path to the audio file.
+        config_file: Path to the openSMILE configuration file.
+        opensmile_path: Path to the openSMILE executable.
+        temp_dir: Directory to store temporary output files.
+
+    Returns:
+        Tuple of (features, timestamps) or (None, None) on error.
+    """
+    if audio_path is None:
+        logging.error("No audio path provided for feature extraction.")
+        return None, None
+
+    # Create temporary output directory if it doesn't exist
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    try:
+        # Create a unique output filename based on the audio file name
+        audio_basename = os.path.basename(audio_path)
+        output_file = os.path.join(temp_dir, f"{os.path.splitext(audio_basename)[0]}_egemaps.arff")
+        
+        # Run openSMILE with the standard eGeMAPS configuration using command-line arguments
+        command = [
+            opensmile_path,
+            "-C", config_file,
+            "-I", audio_path,
+            "-O", output_file,
+            "-instname", audio_basename,
+            "-loglevel", "1"
+        ]
+        
+        logging.info(f"Running openSMILE command: {' '.join(command)}")
+        
+        # Execute the command
+        result = subprocess.run(command, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            logging.error(f"Error running openSMILE: {result.stderr}")
+            logging.info("Falling back to backup openSMILE method for audio feature extraction")
+            return extract_audio_features_backup(audio_path)
+        
+        # Check if the output file exists
+        if not os.path.exists(output_file):
+            logging.error(f"openSMILE did not create output file: {output_file}")
+            return extract_audio_features_backup(audio_path)
+        
+        # Get audio duration for proper timestamp generation
+        audio_duration = 3.0  # Default if we can't determine
+        try:
+            audio_clip = AudioFileClip(audio_path)
+            audio_duration = audio_clip.duration
+            audio_clip.close()
+        except Exception as e:
+            logging.warning(f"Could not determine audio duration: {str(e)}")
+        
+        # Create a temporary directory just for this file to make parsing easier
+        temp_arff_dir = os.path.join(temp_dir, f"{os.path.splitext(audio_basename)[0]}_temp")
+        os.makedirs(temp_arff_dir, exist_ok=True)
+        
+        # Copy the ARFF file to the temporary directory
+        temp_arff_file = os.path.join(temp_arff_dir, os.path.basename(output_file))
+        shutil.copy(output_file, temp_arff_file)
+        
+        # Use our custom ARFF parser from utils.py
+        features, timestamps = load_arff_features(temp_arff_dir, frame_size=0.025, frame_step=0.01)
+        
+        if features.size == 0 or timestamps.size == 0:
+            logging.error("Failed to extract features from ARFF file")
+            return extract_audio_features_backup(audio_path)
+        
+        # If we have fewer features than expected based on audio duration, duplicate to match frame rate
+        expected_frames = int(audio_duration * 100)  # 100Hz is our target frame rate
+        if len(features) < expected_frames:
+            # Repeat the features to create a time series at 100Hz
+            logging.info(f"Creating time series from {len(features)} feature vectors")
+            feature_values = []
+            for _ in range(expected_frames):
+                feature_values.append(features[0])  # Use the same feature vector for all frames
+            
+            features = np.array(feature_values)
+            timestamps = np.linspace(0, audio_duration, expected_frames)
+        
+        logging.info(f"Extracted {features.shape[0]} audio frames with features of dimension {features.shape[1]} using openSMILE")
+        return features, timestamps
+    
+    except Exception as e:
+        logging.error(f"Error extracting audio features with openSMILE: {str(e)}")
+        import traceback
+        logging.error(traceback.format_exc())
+        # Fall back to backup method if openSMILE fails
+        return extract_audio_features_backup(audio_path)
+
+def extract_audio_features_backup(audio_path):
+    """Extract audio features using a simplified openSMILE configuration as backup method.
+    
+    Args:
+        audio_path: Path to the audio file.
+        
+    Returns:
+        Tuple of (features, timestamps) or (None, None) on error.
+    """
+    try:
+        # Create temporary output directory
+        temp_dir = "temp_backup_audio_features"
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        # Create simplified output filename
+        audio_basename = os.path.basename(audio_path)
+        output_file = os.path.join(temp_dir, f"{os.path.splitext(audio_basename)[0]}_backup.arff")
+        
+        # Path to openSMILE executable
+        opensmile_path = "/Users/patrickgloria/conjunction-train/opensmile-3.0.2-macos-armv8/opensmile-3.0.2-macos-armv8/bin/SMILExtract"
+        
+        # Create a temporary configuration file with minimal settings
+        # This is a very minimal config that should work even if the standard config fails
+        temp_config_file = os.path.join(temp_dir, f"{os.path.splitext(audio_basename)[0]}_backup_config.conf")
+        
+        # Extremely simplified configuration with just MFCCs
+        backup_config = f"""
+[componentInstances:cComponentManager]
+instance[dataMemory].type=cDataMemory
+instance[waveIn].type=cWaveSource
+instance[frame].type=cFramer
+instance[win].type=cWindower
+instance[fft].type=cTransformFFT
+instance[mfcc].type=cMfcc
+instance[arffSink].type=cArffSink
+printLevelStats=0
+
+[waveIn:cWaveSource]
+filename = {audio_path}
+monoMixdown = 1
+
+[frame:cFramer]
+frameSize = 0.025
+frameStep = 0.01
+frameCenterSpecial = left
+
+[win:cWindower]
+winFunc = ham
+gain = 1.0
+
+[fft:cTransformFFT]
+fftLen = 512
+
+[mfcc:cMfcc]
+firstMfcc = 1
+lastMfcc = 13
+cepLifter = 22
+htkcompatible = 1
+
+[arffSink:cArffSink]
+filename = {output_file}
+relation = mfcc_backup
+instanceName = emotion
+frameIndex = 0
+frameTime = 1
+timestamp = 1
+"""
+        
+        # Write the backup configuration to file
+        with open(temp_config_file, "w") as f:
+            f.write(backup_config)
+        
+        # Run openSMILE with backup configuration
+        command = [
+            opensmile_path,
+            "-C", temp_config_file,
+            "-noconsoleoutput", "1",
+            "-appendLogfile", "0"
+        ]
+        
+        logging.info(f"Running backup openSMILE with simplified config: {' '.join(command)}")
+        
+        result = subprocess.run(command, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            logging.error(f"Backup openSMILE extraction failed: {result.stderr}")
+            # Create dummy features as last resort
+            timestamps = np.arange(0, 10, 0.01)  # 10 seconds of features at 100Hz
+            features = np.zeros((len(timestamps), 39))  # 13 MFCC * 3 (original + delta + delta-delta)
+            logging.warning("Using zero features as last resort fallback")
+            return features, timestamps
+        
+        # Create a temporary directory just for this file to make parsing easier
+        temp_arff_dir = os.path.join(temp_dir, f"{os.path.splitext(audio_basename)[0]}_temp")
+        os.makedirs(temp_arff_dir, exist_ok=True)
+        
+        # Copy the ARFF file to the temporary directory
+        temp_arff_file = os.path.join(temp_arff_dir, os.path.basename(output_file))
+        shutil.copy(output_file, temp_arff_file)
+        
+        # Use our custom ARFF parser from utils.py
+        features, timestamps = load_arff_features(temp_arff_dir, frame_size=0.025, frame_step=0.01)
+        
+        if features.size == 0 or timestamps.size == 0:
+            logging.error("Failed to extract features from backup ARFF file")
+            # Create dummy features as last resort
+            timestamps = np.arange(0, 10, 0.01)  # 10 seconds of features at 100Hz
+            features = np.zeros((len(timestamps), 39))  # 13 MFCC * 3 (original + delta + delta-delta)
+            logging.warning("Using zero features as last resort fallback after ARFF load failure")
+            return features, timestamps
+        
+        logging.info(f"Extracted {features.shape[0]} audio frames with features of dimension {features.shape[1]} using backup openSMILE method")
+        return features, timestamps
+        
+    except Exception as e:
+        logging.error(f"Error in backup audio feature extraction: {str(e)}")
+        import traceback
+        logging.error(traceback.format_exc())
+        
+        # Final fallback - create dummy features
+        timestamps = np.arange(0, 10, 0.01)  # 10 seconds of features at 100Hz
+        features = np.zeros((len(timestamps), 39))  # 13 MFCC * 3 (original + delta + delta-delta)
+        logging.warning("Using zero features as absolute last resort fallback")
+        return features, timestamps
+
+def align_audio_video_features(video_features, video_timestamps, audio_features, audio_timestamps, 
+                              window_size=1.0, hop_size=0.5, sub_window_size=0.2, sub_window_hop=0.1):
+    """Align audio and video features with temporal pooling approach.
+    
+    Args:
+        video_features: List of video feature vectors
+        video_timestamps: List of timestamps for video features
+        audio_features: List of audio feature vectors
+        audio_timestamps: List of timestamps for audio features
+        window_size: Overall size of time window in seconds
+        hop_size: Step size between windows in seconds
+        sub_window_size: Size of sub-windows for temporal pooling in seconds
+        sub_window_hop: Hop size for sub-windows in seconds
+        
+    Returns:
+        Dict containing separate video and audio sequences, each aligned to the same time windows
+    """
+    if video_features is None or audio_features is None:
+        logging.error("Missing features for alignment")
+        return None
+    
+    if len(video_features) == 0 or len(audio_features) == 0:
+        logging.error("Empty features for alignment")
+        return None
+    
+    logging.info(f"Aligning features: {len(video_features)} video frames, {len(audio_features)} audio frames")
+    logging.info(f"Video time range: {min(video_timestamps):.2f}s - {max(video_timestamps):.2f}s")
+    logging.info(f"Audio time range: {min(audio_timestamps):.2f}s - {max(audio_timestamps):.2f}s")
+    
+    # Get video and audio sampling rates (FPS)
+    video_fps = len(video_features) / (max(video_timestamps) - min(video_timestamps))
+    audio_fps = len(audio_features) / (max(audio_timestamps) - min(audio_timestamps))
+    
+    logging.info(f"Video FPS: {video_fps:.2f}, Audio FPS: {audio_fps:.2f}")
+    
+    # Initialize output sequences
+    video_sequences = []
+    audio_sequences = []
+    window_start_times = []
+    
+    # Get max available time and video duration
+    max_time = min(max(video_timestamps), max(audio_timestamps))
+    video_duration = max_time
+    
+    # Adjust window size for shorter videos
+    actual_window_size = window_size  # Default to requested window size
+    if video_duration < 5.0:
+        # For shorter videos, use the full duration as the window size
+        actual_window_size = video_duration
+        logging.info(f"Using full video duration ({video_duration:.2f}s) as window size for short video")
+    
+    # Handle case where duration is less than requested window size
+    if max_time <= actual_window_size:
+        # Create a single segment using the entire video
+        start_times = [0.0]
+    else:
+        # Create overlapping windows with the appropriate window size
+        # Add a small epsilon to ensure the last window is included
+        start_times = np.arange(0, max_time - actual_window_size + 0.001, hop_size)
+    
+    logging.info(f"Creating {len(start_times)} time windows of {actual_window_size}s with {hop_size}s hop size")
+    
+    for start_time in tqdm(start_times, desc="Aligning features"):
+        end_time = start_time + actual_window_size
+        
+        # 1. Temporal pooling for video features using sub-windows
+        video_sub_windows = []
+        sub_window_start_times = np.arange(start_time, end_time - sub_window_size + 0.001, sub_window_hop)
+        
+        for sub_start in sub_window_start_times:
+            sub_end = sub_start + sub_window_size
+            
+            # Get video frames in this sub-window
+            v_indices = [i for i, t in enumerate(video_timestamps) if sub_start <= t < sub_end]
+            
+            if v_indices:  # Only if we have frames in this sub-window
+                sub_window_video_features = np.array([video_features[i] for i in v_indices])
+                # Average the features in the sub-window (temporal pooling)
+                avg_video = np.mean(sub_window_video_features, axis=0)
+                video_sub_windows.append(avg_video)
+        
+        # 2. Get all audio frames for the entire window
+        a_indices = [i for i, t in enumerate(audio_timestamps) if start_time <= t < end_time]
+        window_audio_features = np.array([audio_features[i] for i in a_indices])
+        
+        # Only create sequences if we have both video and audio data
+        if len(video_sub_windows) > 0 and len(window_audio_features) > 0:
+            video_sequences.append(np.array(video_sub_windows))
+            audio_sequences.append(window_audio_features)
+            window_start_times.append(start_time)
+    
+    # Get dimensions carefully to avoid AttributeError
+    video_dim = 0
+    audio_dim = 0
+    
+    if len(video_features) > 0:
+        # Convert the first element to a numpy array if it's not already
+        first_video_feature = np.array(video_features[0])
+        video_dim = first_video_feature.shape[0]
+    
+    if isinstance(audio_features, np.ndarray) and audio_features.shape[0] > 0:
+        audio_dim = audio_features.shape[1]
+    elif len(audio_features) > 0:
+        # Handle the case where audio_features is a list
+        audio_dim = len(audio_features[0])
+    
+    result = {
+        'video_sequences': video_sequences,
+        'audio_sequences': audio_sequences,
+        'window_start_times': window_start_times,
+        'video_dim': video_dim,
+        'audio_dim': audio_dim
+    }
+    
+    if len(video_sequences) > 0:
+        logging.info(f"Created {len(video_sequences)} aligned sequences")
+        logging.info(f"Video sequence shape: {video_sequences[0].shape}, Audio sequence shape: {audio_sequences[0].shape}")
+    
+    return result
+
+def create_sequences(aligned_features, window_size, overlap):
+    """Create sequences of aligned features for LSTM.
+
+    Args:
+        aligned_features: Array of aligned features.
+        window_size: Number of frames in each sequence.
+        overlap: Number of frames to overlap between sequences.
+
+    Returns:
+        Tuple of (sequences, sequence_lengths).
+    """
+    if aligned_features is None or len(aligned_features) == 0:
+        logging.error("No aligned features to create sequences from")
+        return None, None
+
+    sequences = []
+    sequence_lengths = []
+
+   # Slide window over aligned features
+    for i in range(0, len(aligned_features) - int(window_size) + 1, int(window_size) - int(overlap)):
+        seq = aligned_features[i:i+int(window_size)]
+        if len(seq) == int(window_size):  # Ensure complete sequence
+            sequences.append(seq)
+            sequence_lengths.append(len(seq))
+        else:
+            # For the last incomplete sequence, we can either pad or discard.
+            # Here, we'll include it and track its actual length.
+            padded_seq = np.zeros((int(window_size), aligned_features.shape[1]))
+            padded_seq[:len(seq)] = seq
+            sequences.append(padded_seq)
+            sequence_lengths.append(len(seq))
+
+    return np.array(sequences), np.array(sequence_lengths)
+
+def pad_sequences(sequences, max_length=None, padding='post'):
+    """Pad sequences to the same length.
+    
+    Args:
+        sequences: List of sequences (arrays)
+        max_length: Maximum length to pad to (if None, uses longest sequence)
+        padding: 'pre' or 'post' to pad at beginning or end of sequences
+        
+    Returns:
+        Padded sequences array and original sequence lengths
+    """
+    # Get sequence lengths and maximum length
+    sequence_lengths = np.array([len(seq) for seq in sequences])
+    if max_length is None:
+        max_length = np.max(sequence_lengths)
+    
+    # Get feature dimension
+    feature_dim = sequences[0].shape[1] if sequences[0].ndim > 1 else 1
+    
+    # Initialize padded sequences array
+    padded_seqs = np.zeros((len(sequences), max_length, feature_dim))
+    
+    # Fill in the actual sequences
+    for i, seq in enumerate(sequences):
+        if padding == 'post':
+            padded_seqs[i, :len(seq)] = seq
+        else:  # 'pre'
+            padded_seqs[i, -len(seq):] = seq
+    
+    return padded_seqs, sequence_lengths
+
+def process_video_for_multimodal_lstm(
+    video_path,
+    output_dir="processed_features",
+    model_name="VGG-Face",
+    window_size=1.0,  # Changed from 2.0 to 1.0 for 1-second segments
+    hop_size=0.5,     # Kept at 0.5 as per requirements
+    sub_window_size=0.2,
+    sub_window_hop=0.1
+):
+    """Complete pipeline to process video for multimodal LSTM with temporal pooling.
+
+    Args:
+        video_path: Path to the video file
+        output_dir: Directory to save processed features
+        model_name: DeepFace model to use
+        window_size: Time window size in seconds for feature alignment (2-second segments)
+        hop_size: Step size between windows in seconds
+        sub_window_size: Size of sub-windows for temporal pooling in seconds
+        sub_window_hop: Hop size for sub-windows in seconds
+
+    Returns:
+        Path to the saved feature file or None if processing fails
+    """
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+
+    logging.info(f"Processing video: {video_path}")
+
+    # Get emotion label from filename
+    try:
+        filename = os.path.basename(video_path)
+        parts = filename.split('-')
+        if len(parts) >= 3:  # RAVDESS format
+            emotion_code = int(parts[2])
+            # Map to 0-based index for RAVDESS (1-8 -> 0-7)
+            emotion_label = emotion_code - 1
+            logging.info(f"Extracted emotion label from filename: {emotion_label}")
+        else:
+            # For other datasets or unknown format
+            emotion_label = -1
+            logging.warning(f"Could not extract emotion label from filename: {filename}")
+    except Exception as e:
+        emotion_label = -1
+        logging.warning(f"Error extracting emotion label: {str(e)}")
+
+    # 1. Extract audio from video
+    audio_path = extract_audio_from_video(video_path)
+    if audio_path is None:
+        logging.error(f"Failed to extract audio from {video_path}")
+        return None
+
+    logging.info(f"Extracted audio to: {audio_path}")
+
+    # 2. Extract frame-level features
+    video_features, video_timestamps = extract_frame_level_video_features(
+        video_path, model_name=model_name
+    )
+    if video_features is None:
+        logging.error(f"Failed to extract video features from {video_path}")
+        return None
+
+    logging.info(f"Extracted {len(video_features)} video frames with features of dimension {len(video_features[0])}")
+
+    audio_features, audio_timestamps = extract_frame_level_audio_features(audio_path)
+    if audio_features is None:
+        logging.error(f"Failed to extract audio features from {audio_path}")
+        return None
+
+    logging.info(f"Extracted {len(audio_features)} audio frames with features of dimension {audio_features.shape[1]}")
+
+    # 3. Align features with temporal pooling
+    aligned_data = align_audio_video_features(
+        video_features, video_timestamps,
+        audio_features, audio_timestamps,
+        window_size=window_size, 
+        hop_size=hop_size,
+        sub_window_size=sub_window_size,
+        sub_window_hop=sub_window_hop
+    )
+
+    if aligned_data is None or 'video_sequences' not in aligned_data or len(aligned_data['video_sequences']) == 0:
+        logging.error(f"Failed to align features for {video_path}")
+        return None
+
+    video_sequences = aligned_data['video_sequences']
+    audio_sequences = aligned_data['audio_sequences']
+    
+    logging.info(f"Created {len(video_sequences)} aligned sequences")
+    
+    # 5. Save processed data
+    output_file = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(video_path))[0]}.npz")
+    
+    # Convert sequences to object arrays to handle variable sizes
+    video_seq_obj = np.empty(len(video_sequences), dtype=object)
+    audio_seq_obj = np.empty(len(audio_sequences), dtype=object)
+    
+    for i in range(len(video_sequences)):
+        video_seq_obj[i] = video_sequences[i]
+        audio_seq_obj[i] = audio_sequences[i]
+        
+    # Save as compressed NPZ file with object arrays
+    np.savez_compressed(
+        output_file,
+        video_sequences=video_seq_obj,
+        audio_sequences=audio_seq_obj,
+        window_start_times=aligned_data['window_start_times'],
+        video_dim=aligned_data['video_dim'],
+        audio_dim=aligned_data['audio_dim'],
+        emotion_label=emotion_label,
+        params={
+            'model_name': model_name,
+            'window_size': window_size,
+            'hop_size': hop_size,
+            'sub_window_size': sub_window_size,
+            'sub_window_hop': sub_window_hop
+        }
+    )
+
+    logging.info(f"Saved processed data to: {output_file}")
+
+    return output_file
+
+def process_dataset_videos(video_dir, pattern="*.flv", output_dir="processed_features", n_workers=4, **kwargs):
+    """Process all videos in a directory.
+
+    Args:
+        video_dir: Directory containing video files
+        pattern: File pattern to match (e.g., "*.flv" for CREMA-D)
+        output_dir: Directory to save processed features
+        n_workers: Number of worker processes for parallel processing
+        **kwargs: Additional arguments to pass to process_video_for_multimodal_lstm
+
+    Returns:
+        List of paths to processed feature files
+    """
+    video_paths = glob.glob(os.path.join(video_dir, pattern))
+    if not video_paths:
+        logging.error(f"No videos found matching pattern {pattern} in {video_dir}")
+        return []
+
+    logging.info(f"Found {len(video_paths)} videos matching pattern {pattern} in {video_dir}")
+
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Process videos sequentially (for now)
+    output_files = []
+
+    for video_path in tqdm(video_paths, desc=f"Processing videos ({pattern})"):
+        output_file = process_video_for_multimodal_lstm(
+            video_path=video_path,
+            output_dir=output_dir,
+            **kwargs
+        )
+        if output_file:
+            output_files.append(output_file)
+
+    # Parallel processing (commented out for debugging purposes)
+    # with Pool(n_workers) as pool:
+    #     args = [(video_path, config_file, output_dir) for video_path in video_paths]
+    #     output_files = list(tqdm(
+    #         pool.imap(lambda x: process_video_for_multimodal_lstm(*x, **kwargs), args),
+    #         total=len(video_paths),
+    #         desc=f"Processing videos ({pattern})"
+    #     ))
+
+    # Filter out None results
+    output_files = [f for f in output_files if f]
+
+    logging.info(f"Successfully processed {len(output_files)} out of {len(video_paths)} videos")
+
+    return output_files
+
+if __name__ == "__main__":
+    # Check command line arguments
+    if len(sys.argv) > 1:
+        input_path = sys.argv[1]
+    else:
+        input_path = "data/CREMA-D/VideoFlash"
+    
+    output_dir = "processed_features"
+    
+    # Check if input is a directory or a file
+    if os.path.isdir(input_path):
+        # Process videos in directory
+        # For CREMA-D
+        video_ext = "*.flv"
+        # For RAVDESS
+        if "RAVDESS" in input_path:
+            video_ext = "*.mp4"
+            
+        video_paths = glob.glob(os.path.join(input_path, video_ext))  # Process all available videos
+        
+        if not video_paths:
+            logging.error(f"No videos found in {input_path} matching {video_ext}")
+            sys.exit(1)
+        
+        logging.info(f"Processing {len(video_paths)} sample videos from {input_path}")
+        
+        for video_path in video_paths:
+            output_file = process_video_for_multimodal_lstm(
+                video_path=video_path,
+                output_dir=output_dir
+            )
+            if output_file:
+                logging.info(f"Successfully processed {video_path} -> {output_file}")
+            else:
+                logging.error(f"Failed to process {video_path}")
+    
+    elif os.path.isfile(input_path):
+        # Process single video file
+        logging.info(f"Processing single video file: {input_path}")
+        output_file = process_video_for_multimodal_lstm(
+            video_path=input_path,
+            output_dir=output_dir
+        )
+        if output_file:
+            logging.info(f"Successfully processed {input_path} -> {output_file}")
+        else:
+            logging.error(f"Failed to process {input_path}")
+    
+    else:
+        logging.error(f"Input path does not exist: {input_path}")
+        sys.exit(1)

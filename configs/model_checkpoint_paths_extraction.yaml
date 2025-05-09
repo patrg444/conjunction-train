@@ -1,0 +1,7 @@
+checkpoints:
+  xlm_roberta_v3:
+    model_path: /home/ubuntu/conjunction-train/checkpoints/xlm_roberta_hf
+  hubert_laughter:
+    model_path: /home/ubuntu/conjunction-train/checkpoints/laughter_wavlm_hf
+  smile_resnet18:
+    model_path: /home/ubuntu/conjunction-train/checkpoints/smile/best.ckpt

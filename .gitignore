@@ -1,0 +1,108 @@
+# Existing entries
+data/
+*.wav
+*.mp4
+*.flv
+*.avi
+*.arff
+temp_*/
+*.log
+opensmile-3.0.2-macos-armv8/
+opensmile-3.0.2-macos-armv8.zip
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+pip-wheel-metadata/
+.Python
+env/
+venv/
+ENV/
+VENV/
+*.env
+.ipynb_checkpoints
+
+# IDE / Editor specific
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sublime-workspace
+
+# OS specific
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Datasets & Features
+datasets/
+datasets_raw/
+crema_d_features/
+crema_d_features_facenet/
+SMILE/
+# Add other specific dataset directories if they exist outside 'datasets/'
+
+# Model checkpoints and files
+checkpoints/
+checkpoints_test/
+*.h5
+*.pth
+*.pt
+*.onnx
+*.pb
+*.model
+*.ckpt
+*.index
+*.meta
+
+# Large data files & intermediate results
+*.npz
+*.npy
+# Consider if other large intermediate files should be ignored by extension or directory
+
+# Output, logs, and cache directories
+cache/
+logs/ # More generic than just *.log if you have log directories
+analysis_output/
+comparison_results/
+comparison_results_ec2/
+alignment_visualizations/
+batch_analysis/
+analysis_results/
+amp/ # For NVIDIA Apex or similar
+
+# Sensitive files
+aws_instance_ip.txt
+*.pem # If any private keys are accidentally in the project (they shouldn't be!)
+aws-setup/aws_credentials.sh
+secrets.yaml
+secrets.json
+credentials.json
+# Add any other files containing sensitive credentials
+
+# Build artifacts
+build/
+dist/
+*.egg
+
+# Specific files from your project list that look like temporary or output
+.slowfast_training_started
+01-01-06-01-02-01-16_facenet_features_visualization.png
+# audio_mean.npy # Already covered by *.npy
+# audio_std.npy  # Already covered by *.npy
+# best_attn_crnn_model.h5 # Already covered by *.h5
+# calma_neutral_count.csv # If this is generated data
+# class_distribution_output.txt # If this is generated
+# corrected_manifest_hubert_embeddings.npz # Already covered by *.npz
+# example_successful_monitoring.txt # If this is a log or temp file
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# Large mf.sh file
+mf.sh

@@ -1,0 +1,63 @@
+# SlowFast Video Emotion Recognition Configuration
+# This config file contains optimized settings for the SlowFast-R50 backbone
+# to achieve 70%+ accuracy on facial emotion recognition tasks
+
+# Model settings
+model:
+  backbone: "slowfast_r50"  # torchvision SlowFast implementation
+  pretrained: true  # Use Kinetics-400 pretrained weights
+  freeze_backbone: false  # Train the entire backbone
+  use_se: true  # Add Squeeze-and-Excitation blocks
+  dropout: 0.5  # Dropout rate for final layers
+  embedding_size: 2304  # SlowFast-R50 feature dim (2048 + 256)
+  hidden_size: 256  # LSTM hidden dimension
+
+# Input settings
+input:
+  frames: 48  # Number of frames per clip
+  img_size: 112  # Face crop size (squared)
+  clips_per_video: 2  # Number of clips to sample per video during training
+  test_clips: 5  # Number of clips to average during validation/testing
+
+# Augmentation settings
+augmentation:
+  horizontal_flip: true
+  random_affine:
+    enabled: true
+    rotate: 5  # Degrees
+    scale: 0.05  # Scale variation (±5%)
+    translate: [0.05, 0.05]  # Translation in fraction of total size
+  color_jitter:
+    enabled: true
+    brightness: 0.2
+    contrast: 0.2
+    saturation: 0.2
+    hue: 0.1
+  cutout:
+    enabled: true
+    size: 10  # Pixels
+    count: 2  # Number of cutout patches
+  time_reverse: true  # Randomly reverse clip in time dimension
+  drop_frames:
+    enabled: true
+    max_drop: 2  # Maximum number of frames to drop
+
+# Training settings
+training:
+  batch_size: 6  # Reduce batch size for SlowFast (larger model)
+  epochs: 60  # Extended training schedule
+  optimizer: "adamw"  # AdamW optimizer
+  weight_decay: 1e-4  # L2 regularization
+  label_smoothing: 0.05  # Label smoothing factor
+  learning_rate: 3e-4  # Base learning rate
+  lr_schedule: "one_cycle"  # One-cycle LR schedule
+  warmup_epochs: 2  # Linear warmup for first N epochs
+  grad_clip: 5.0  # Gradient clipping norm
+  early_stop_patience: 12  # Early stopping patience
+  amp: true  # Use automatic mixed precision
+
+# Dataset settings
+dataset:
+  train_split: "train"
+  val_split: "val"
+  num_workers: 4  # Dataloader workers

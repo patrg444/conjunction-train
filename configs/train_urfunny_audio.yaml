@@ -1,0 +1,55 @@
+# YAML Configuration for UR-FUNNY Audio-Only WavLM Training
+
+model:
+  # Hugging Face WavLM model name
+  model_name: "microsoft/wavlm-base-plus" # Or "microsoft/wavlm-large"
+  # Number of output classes for humor detection (Non-Humor, Humor)
+  num_classes: 2 # Changed back to 2 for CrossEntropyLoss
+  # Whether to freeze the weights of the WavLM feature extractor
+  freeze_feature_extractor: false # Set to true to only train the classifier head
+
+data:
+  # Path to the training manifest CSV on the EC2 instance
+  train_manifest: "datasets/manifests/humor/ur_funny_train_humor.csv"
+  # Path to the validation manifest CSV on the EC2 instance (optional)
+  val_manifest: "datasets/manifests/humor/ur_funny_val_humor.csv"
+  # Target audio sample rate (must match WavLM's expected SR, typically 16000)
+  test_manifest: "datasets/manifests/humor/ur_funny_test_humor.csv"
+  sample_rate: 16000
+  # Duration of audio segments to load in seconds
+  duration: 6.0 # Reduced duration to match WavLM's typical pre-training window
+  # Explicit data root for audio files on the EC2 instance
+  data_root: "/home/ubuntu/conjunction-train/datasets/ur_funny/audio" # Corrected data root based on user feedback
+  # DataLoader parameters
+  dataloader_params:
+    batch_size: 16
+    shuffle: false
+    num_workers: 4
+    pin_memory: true
+
+training:
+  # Number of training epochs
+  optimizer: "AdamW"
+  # Optimizer parameters
+  optimizer_params:
+    classifier_lr: 0.001 # Higher LR for the new classifier head
+    backbone_lr: 0.00001 # Lower LR for the pre-trained backbone
+    weight_decay: 0.0001
+  # Use mixed precision training (reduces memory usage and speeds up training on compatible GPUs)
+  fp16: true
+  # Early stopping patience (number of epochs to wait for improvement before stopping)
+  early_stop_patience: 5
+  # Learning rate scheduler configuration
+  lr_scheduler:
+    name: cosine # Use cosine scheduler
+    warmup_pct: 0.1 # 10% warmup
+  # Output directory for saving checkpoints and logs on the EC2 instance
+  output_dir: "/home/ubuntu/conjunction-train/checkpoints/wavlm_urfunny_audio_only"
+
+logging:
+  # Log directory (can be same as output_dir or separate)
+  log_dir: "/home/ubuntu/conjunction-train/logs/wavlm_urfunny_audio_only"
+
+checkpointing:
+  # Checkpoint directory (should be same as output_dir)
+  checkpoint_dir: "/home/ubuntu/conjunction-train/checkpoints/wavlm_urfunny_audio_only"

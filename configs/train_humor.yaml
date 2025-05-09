@@ -1,0 +1,77 @@
+# configs/train_humor.yaml
+
+# --- Dataset Configuration ---
+data:
+  # Use the cleaned manifests with properly processed transcripts
+  train_csv_with_text:  "datasets/manifests/humor/ur_funny_train_humor_cleaned.csv"
+  val_csv_with_text:  "datasets/manifests/humor/ur_funny_val_humor_cleaned.csv"
+  #train_csv: "datasets/manifests/humor/train_humor.csv" # Original path (keep commented for reference)
+  #val_csv: "datasets/manifests/humor/val_humor.csv" # Original path (keep commented for reference)
+  dataset_root:  "datasets/manifests" # Root containing humor/ etc.
+  dataloader_params:
+    batch_size:  32 # Adjust as needed based on GPU memory
+    num_workers:  4 # Adjust based on CPU cores
+    pin_memory:  True
+  dataset_params:
+    duration:  1.0
+    sample_rate:  16000
+    video_fps:  15
+    #video_frames: 15 # Calculated automatically if duration/fps are set
+    max_text_len:  128 # Max sequence length for text tokenizer
+
+# --- Model Configuration ---
+model:
+  # Assuming we adapt an existing fusion architecture
+  # Specify the base architecture or relevant parameters here
+  # e.g., base_model_checkpoint: "/path/to/pretrained/emotion_fusion_model.pth" (Optional)
+  architecture:  "FusionNetWithHumorHead" # Placeholder name - needs implementation
+  # num_classes_emotion: 8 # Removed - Not using emotion branch
+  num_classes_humor:  2 # Humor vs Non-Humor (0 vs 1) - Final output head
+  # Add other model-specific params like feature dimensions, layer sizes etc.
+  # These are examples and need to match the actual model used/adapted:
+  #audio_input_dim: 1024 # Example, adjust based on actual feature extractor
+  #video_input_dim: 2048 # Example, adjust based on actual feature extractor
+  fusion_dim:  512 # Example
+  dropout:  0.5 # Example dropout for fusion layer
+
+  # Specify checkpoints and model names for branches
+  hubert_model_name:  "facebook/hubert-base-ls960"
+  hubert_checkpoint:  "checkpoints/laughter_best.ckpt"
+  smile_checkpoint:  "checkpoints/smile_best.ckpt"
+  text_checkpoint:   "checkpoints/text_best.ckpt"
+  text_model_name:  "distilbert-base-uncased" # Must match the model used for text training
+
+  # Control freezing of pretrained backbones during fusion training
+  freeze_pretrained: true
+
+# --- Training Configuration ---
+training:
+  task:  "humor_detection" # Focus solely on humor for now
+  epochs:  50 # Adjust as needed
+  optimizer:  "Adam"
+  optimizer_params:
+    lr:  0.0001
+    weight_decay:  0.0001
+  # Optional: Learning rate scheduler
+  #scheduler: "StepLR"
+  #scheduler_params:
+  #  step_size: 10
+  #  gamma: 0.1
+  # Loss function - Handled by multi-task setup in training script
+  # Define loss weights for multi-task learning
+  loss_weights:
+    # emotion: 1.0 # Removed - Not using emotion branch
+    humor: 0.5   # Weight for final humor head
+    laugh: 1.0   # Weight for direct laugh head (audio)
+    smile: 0.3   # Weight for direct smile head (video)
+    joke: 0.5    # Weight for direct joke head
+  device:  "cuda" # Assuming GPU training
+  gradient_accumulation_steps:  1 # Increase if batch size needs to be effectively larger
+
+# --- Logging and Checkpointing ---
+logging:
+  log_dir:  "logs/humor_training"
+  log_interval:  10 # Log metrics every N batches
+checkpointing:
+  checkpoint_dir:  "checkpoints/humor_training"
+  save_interval:  1 # Save checkpoint every N epochs

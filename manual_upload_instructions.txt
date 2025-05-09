@@ -1,0 +1,82 @@
+# Manual Upload Instructions for RAVDESS and CREMA-D Datasets
+
+Due to SSH public key authentication issues, we need to provide manual instructions for uploading and processing the datasets.
+
+## EC2 Access Issue
+When trying to connect to the EC2 instance at 54.162.134.77, we encountered a "Permission denied (publickey)" error. This means that either:
+1. The SSH key being used is not authorized for this instance
+2. The SSH key might have incorrect permissions or format
+3. The EC2 instance might require a specific key pair
+
+## Required Paths
+Here are the target paths that should be created on the EC2 instance:
+
+- RAVDESS_VIDEOS_PATH = /home/ubuntu/datasets/ravdess_videos
+- CREMA_D_VIDEOS_PATH = /home/ubuntu/datasets/crema_d_videos
+
+## Manual Upload Steps
+
+1. **Authentication Setup**
+   - Identify the correct key pair for this EC2 instance
+   - Ensure the key has correct permissions: `chmod 400 your-key.pem`
+
+2. **Create Directories on EC2**
+   ```bash
+   ssh -i your-key.pem ubuntu@54.162.134.77 "mkdir -p /home/ubuntu/datasets/ravdess_videos /home/ubuntu/datasets/crema_d_videos"
+   ```
+
+3. **Download RAVDESS and CREMA-D Datasets on EC2**
+   ```bash
+   ssh -i your-key.pem ubuntu@54.162.134.77
+   # Once connected to EC2:
+   cd /home/ubuntu/datasets
+   
+   # Download RAVDESS
+   wget https://zenodo.org/record/1188976/files/Video_Speech_Actor_01-24.zip -O ravdess.zip
+   
+   # Download CREMA-D
+   wget https://zenodo.org/record/1225427/files/CREMA-D.zip -O crema_d.zip
+   
+   # Extract RAVDESS videos
+   mkdir -p ravdess_tmp
+   unzip -q ravdess.zip -d ravdess_tmp
+   mv ravdess_tmp/Video_Speech_Actor_* ravdess_videos/
+   # Rename to strip the "Video_Speech_" prefix
+   for dir in ravdess_videos/Video_Speech_Actor_*; do
+     if [ -d "$dir" ]; then
+       new_name="${dir/Video_Speech_/}"
+       mv "$dir" "$new_name"
+     fi
+   done
+   rm -rf ravdess_tmp ravdess.zip
+   
+   # Extract CREMA-D videos
+   mkdir -p crema_d_tmp
+   unzip -q crema_d.zip -d crema_d_tmp
+   find crema_d_tmp -type f \( -name "*.mp4" -o -name "*.flv" \) -exec mv {} crema_d_videos/ \;
+   rm -rf crema_d_tmp crema_d.zip
+   
+   # Verify extraction
+   echo "RAVDESS videos: $(find ravdess_videos -name '*.mp4' | wc -l)"
+   echo "CREMA-D videos: $(find crema_d_videos -type f \( -name '*.mp4' -o -name '*.flv' \) | wc -l)"
+   ```
+
+4. **Copy the Updated FER Feature Extraction Script**
+   ```bash
+   scp -i your-key.pem scripts/updated_extract_fer_features.py ubuntu@54.162.134.77:/home/ubuntu/emotion-recognition/scripts/extract_fer_features.py
+   ```
+
+5. **Run the Feature Extraction**
+   ```bash
+   ssh -i your-key.pem ubuntu@54.162.134.77 "cd /home/ubuntu/emotion-recognition && python scripts/extract_fer_features.py --dataset ravdess"
+   # After RAVDESS completes, run CREMA-D extraction
+   ssh -i your-key.pem ubuntu@54.162.134.77 "cd /home/ubuntu/emotion-recognition && python scripts/extract_fer_features.py --dataset crema_d"
+   ```
+
+## FER Feature Paths
+
+The extracted FER features will be stored at:
+- RAVDESS: /home/ubuntu/emotion-recognition/ravdess_features_fer/
+- CREMA-D: /home/ubuntu/emotion-recognition/crema_d_features_fer/
+
+Each video will produce a corresponding .npz file containing the extracted facial emotion recognition features.

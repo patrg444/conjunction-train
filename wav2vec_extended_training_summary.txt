@@ -1,0 +1,19 @@
+Deployment successful! Starting extended training with the following details:
+
+- Using best model weights from: /home/ubuntu/audio_emotion/checkpoints/wav2vec_audio_only_fixed_v4_restarted_20250422_132858_best.weights.h5
+- Training for additional 100 epochs with batch size of 64
+- Learning rate reduced to 0.0005 (from 0.001) for more refined optimization
+- Fixed learning rate warm-up implementation working correctly
+
+Current training status:
+- Training is running successfully (process ID: 904458)
+- Initial validation accuracy (epoch 1): 53.86%
+- Improved validation accuracy (epoch 2): 54.32%
+- Best validation accuracy so far (epoch 3): 54.55%
+- Epochs 4-7 have not improved beyond 54.55%
+- Currently on epoch 8 of 100
+
+This is a slight improvement over the previous best accuracy of 54.43%.
+The training has 20 epochs of early stopping patience, so it will continue
+to try different weight configurations before stopping if no further improvement
+is seen.

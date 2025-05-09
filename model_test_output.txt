@@ -1,0 +1,311 @@
+WARNING:absl:At this time, the v2.11+ optimizer `tf.keras.optimizers.Adam` runs slowly on M1/M2 Macs, please use the legacy Keras optimizer instead, located at `tf.keras.optimizers.legacy.Adam`.
+WARNING:absl:There is a known slowdown when using v2.11+ Keras optimizers on M1/M2 Macs. Falling back to the legacy Keras optimizer, i.e., `tf.keras.optimizers.legacy.Adam`.
+ADVANCED HYBRID MODEL WITH TCN-ATTENTION ARCHITECTURE, ENHANCED REGULARIZATION, AND ADVANCED LEARNING SCHEDULE
+TensorFlow version: 2.13.0
+NumPy version: 1.24.3
+Python version: 3.8.12 (default, Jun 18 2024, 00:58:28) 
+[Clang 15.0.0 (clang-1500.3.9.4)]
+Starting optimized balanced model training with SYNCHRONIZED DATA AUGMENTATION, BALANCED REGULARIZATION, FOCUSED TCN, AND ADJUSTED LEARNING RATE...
+- Using learning rate: 0.0006
+Creating dummy data for local testing...
+Creating advanced hybrid model with attention, TCN, skip connections, and balanced regularization:
+- Audio feature dimension: 40
+- Video feature dimension: 512
+- L2 regularization strength: 0.002
+- Weight constraint: 3.0
+- Attention heads: 4
+- Audio Conv Filters: [64, 128]
+- Audio LSTM Units: [128, 64]
+- Video TCN Filters: 128
+- Video TCN Blocks: 4
+- Merged Dense Units: [256, 128]
+- Learning rate: 0.0006 with warm-up and cosine decay
+- Weight decay: 0.0005
+Model created successfully!
+Model summary:
+Model: "model"
+__________________________________________________________________________________________________
+ Layer (type)                Output Shape                 Param #   Connected to                  
+==================================================================================================
+ video_input (InputLayer)    [(None, None, 512)]          0         []                            
+                                                                                                  
+ masking_1 (Masking)         (None, None, 512)            0         ['video_input[0][0]']         
+                                                                                                  
+ conv1d_3 (Conv1D)           (None, None, 128)            65664     ['masking_1[0][0]']           
+                                                                                                  
+ layer_normalization_3 (Lay  (None, None, 128)            256       ['conv1d_3[0][0]']            
+ erNormalization)                                                                                 
+                                                                                                  
+ conv1d_4 (Conv1D)           (None, None, 128)            49280     ['layer_normalization_3[0][0]'
+                                                                    ]                             
+                                                                                                  
+ batch_normalization_2 (Bat  (None, None, 128)            512       ['conv1d_4[0][0]']            
+ chNormalization)                                                                                 
+                                                                                                  
+ spatial_dropout1d_2 (Spati  (None, None, 128)            0         ['batch_normalization_2[0][0]'
+ alDropout1D)                                                       ]                             
+                                                                                                  
+ conv1d_5 (Conv1D)           (None, None, 128)            49280     ['spatial_dropout1d_2[0][0]'] 
+                                                                                                  
+ batch_normalization_3 (Bat  (None, None, 128)            512       ['conv1d_5[0][0]']            
+ chNormalization)                                                                                 
+                                                                                                  
+ spatial_dropout1d_3 (Spati  (None, None, 128)            0         ['batch_normalization_3[0][0]'
+ alDropout1D)                                                       ]                             
+                                                                                                  
+ add_3 (Add)                 (None, None, 128)            0         ['spatial_dropout1d_3[0][0]', 
+                                                                     'conv1d_3[0][0]']            
+                                                                                                  
+ activation_1 (Activation)   (None, None, 128)            0         ['add_3[0][0]']               
+                                                                                                  
+ layer_normalization_4 (Lay  (None, None, 128)            256       ['activation_1[0][0]']        
+ erNormalization)                                                                                 
+                                                                                                  
+ multi_head_attention_1 (Mu  (None, None, 128)            131968    ['layer_normalization_4[0][0]'
+ ltiHeadAttention)                                                  , 'layer_normalization_4[0][0]
+                                                                    ']                            
+                                                                                                  
+ add_4 (Add)                 (None, None, 128)            0         ['multi_head_attention_1[0][0]
+                                                                    ',                            
+                                                                     'activation_1[0][0]']        
+                                                                                                  
+ layer_normalization_5 (Lay  (None, None, 128)            256       ['add_4[0][0]']               
+ erNormalization)                                                                                 
+                                                                                                  
+ dense_3 (Dense)             (None, None, 256)            33024     ['layer_normalization_5[0][0]'
+                                                                    ]                             
+                                                                                                  
+ dropout_3 (Dropout)         (None, None, 256)            0         ['dense_3[0][0]']             
+                                                                                                  
+ dense_4 (Dense)             (None, None, 128)            32896     ['dropout_3[0][0]']           
+                                                                                                  
+ add_5 (Add)                 (None, None, 128)            0         ['add_4[0][0]',               
+                                                                     'dense_4[0][0]']             
+                                                                                                  
+ layer_normalization_6 (Lay  (None, None, 128)            256       ['add_5[0][0]']               
+ erNormalization)                                                                                 
+                                                                                                  
+ conv1d_6 (Conv1D)           (None, None, 128)            49280     ['layer_normalization_6[0][0]'
+                                                                    ]                             
+                                                                                                  
+ batch_normalization_4 (Bat  (None, None, 128)            512       ['conv1d_6[0][0]']            
+ chNormalization)                                                                                 
+                                                                                                  
+ spatial_dropout1d_4 (Spati  (None, None, 128)            0         ['batch_normalization_4[0][0]'
+ alDropout1D)                                                       ]                             
+                                                                                                  
+ conv1d_7 (Conv1D)           (None, None, 128)            49280     ['spatial_dropout1d_4[0][0]'] 
+                                                                                                  
+ batch_normalization_5 (Bat  (None, None, 128)            512       ['conv1d_7[0][0]']            
+ chNormalization)                                                                                 
+                                                                                                  
+ spatial_dropout1d_5 (Spati  (None, None, 128)            0         ['batch_normalization_5[0][0]'
+ alDropout1D)                                                       ]                             
+                                                                                                  
+ add_6 (Add)                 (None, None, 128)            0         ['spatial_dropout1d_5[0][0]', 
+                                                                     'add_5[0][0]']               
+                                                                                                  
+ activation_2 (Activation)   (None, None, 128)            0         ['add_6[0][0]']               
+                                                                                                  
+ layer_normalization_7 (Lay  (None, None, 128)            256       ['activation_2[0][0]']        
+ erNormalization)                                                                                 
+                                                                                                  
+ conv1d_8 (Conv1D)           (None, None, 128)            49280     ['layer_normalization_7[0][0]'
+                                                                    ]                             
+                                                                                                  
+ batch_normalization_6 (Bat  (None, None, 128)            512       ['conv1d_8[0][0]']            
+ chNormalization)                                                                                 
+                                                                                                  
+ spatial_dropout1d_6 (Spati  (None, None, 128)            0         ['batch_normalization_6[0][0]'
+ alDropout1D)                                                       ]                             
+                                                                                                  
+ conv1d_9 (Conv1D)           (None, None, 128)            49280     ['spatial_dropout1d_6[0][0]'] 
+                                                                                                  
+ audio_input (InputLayer)    [(None, None, 40)]           0         []                            
+                                                                                                  
+ batch_normalization_7 (Bat  (None, None, 128)            512       ['conv1d_9[0][0]']            
+ chNormalization)                                                                                 
+                                                                                                  
+ masking (Masking)           (None, None, 40)             0         ['audio_input[0][0]']         
+                                                                                                  
+ spatial_dropout1d_7 (Spati  (None, None, 128)            0         ['batch_normalization_7[0][0]'
+ alDropout1D)                                                       ]                             
+                                                                                                  
+ conv1d (Conv1D)             (None, None, 64)             7744      ['masking[0][0]']             
+                                                                                                  
+ add_7 (Add)                 (None, None, 128)            0         ['spatial_dropout1d_7[0][0]', 
+                                                                     'activation_2[0][0]']        
+                                                                                                  
+ batch_normalization (Batch  (None, None, 64)             256       ['conv1d[0][0]']              
+ Normalization)                                                                                   
+                                                                                                  
+ activation_3 (Activation)   (None, None, 128)            0         ['add_7[0][0]']               
+                                                                                                  
+ spatial_dropout1d (Spatial  (None, None, 64)             0         ['batch_normalization[0][0]'] 
+ Dropout1D)                                                                                       
+                                                                                                  
+ layer_normalization_8 (Lay  (None, None, 128)            256       ['activation_3[0][0]']        
+ erNormalization)                                                                                 
+                                                                                                  
+ max_pooling1d (MaxPooling1  (None, None, 64)             0         ['spatial_dropout1d[0][0]']   
+ D)                                                                                               
+                                                                                                  
+ multi_head_attention_2 (Mu  (None, None, 128)            131968    ['layer_normalization_8[0][0]'
+ ltiHeadAttention)                                                  , 'layer_normalization_8[0][0]
+                                                                    ']                            
+                                                                                                  
+ conv1d_2 (Conv1D)           (None, None, 128)            24704     ['max_pooling1d[0][0]']       
+                                                                                                  
+ add_8 (Add)                 (None, None, 128)            0         ['multi_head_attention_2[0][0]
+                                                                    ',                            
+                                                                     'activation_3[0][0]']        
+                                                                                                  
+ batch_normalization_1 (Bat  (None, None, 128)            512       ['conv1d_2[0][0]']            
+ chNormalization)                                                                                 
+                                                                                                  
+ layer_normalization_9 (Lay  (None, None, 128)            256       ['add_8[0][0]']               
+ erNormalization)                                                                                 
+                                                                                                  
+ spatial_dropout1d_1 (Spati  (None, None, 128)            0         ['batch_normalization_1[0][0]'
+ alDropout1D)                                                       ]                             
+                                                                                                  
+ conv1d_1 (Conv1D)           (None, None, 128)            8320      ['max_pooling1d[0][0]']       
+                                                                                                  
+ dense_5 (Dense)             (None, None, 256)            33024     ['layer_normalization_9[0][0]'
+                                                                    ]                             
+                                                                                                  
+ add (Add)                   (None, None, 128)            0         ['spatial_dropout1d_1[0][0]', 
+                                                                     'conv1d_1[0][0]']            
+                                                                                                  
+ dropout_4 (Dropout)         (None, None, 256)            0         ['dense_5[0][0]']             
+                                                                                                  
+ activation (Activation)     (None, None, 128)            0         ['add[0][0]']                 
+                                                                                                  
+ dense_6 (Dense)             (None, None, 128)            32896     ['dropout_4[0][0]']           
+                                                                                                  
+ max_pooling1d_1 (MaxPoolin  (None, None, 128)            0         ['activation[0][0]']          
+ g1D)                                                                                             
+                                                                                                  
+ add_9 (Add)                 (None, None, 128)            0         ['add_8[0][0]',               
+                                                                     'dense_6[0][0]']             
+                                                                                                  
+ layer_normalization (Layer  (None, None, 128)            256       ['max_pooling1d_1[0][0]']     
+ Normalization)                                                                                   
+                                                                                                  
+ layer_normalization_10 (La  (None, None, 128)            256       ['add_9[0][0]']               
+ yerNormalization)                                                                                
+                                                                                                  
+ multi_head_attention (Mult  (None, None, 128)            131968    ['layer_normalization[0][0]', 
+ iHeadAttention)                                                     'layer_normalization[0][0]'] 
+                                                                                                  
+ conv1d_10 (Conv1D)          (None, None, 128)            49280     ['layer_normalization_10[0][0]
+                                                                    ']                            
+                                                                                                  
+ add_1 (Add)                 (None, None, 128)            0         ['multi_head_attention[0][0]',
+                                                                     'max_pooling1d_1[0][0]']     
+                                                                                                  
+ batch_normalization_8 (Bat  (None, None, 128)            512       ['conv1d_10[0][0]']           
+ chNormalization)                                                                                 
+                                                                                                  
+ layer_normalization_1 (Lay  (None, None, 128)            256       ['add_1[0][0]']               
+ erNormalization)                                                                                 
+                                                                                                  
+ spatial_dropout1d_8 (Spati  (None, None, 128)            0         ['batch_normalization_8[0][0]'
+ alDropout1D)                                                       ]                             
+                                                                                                  
+ dense (Dense)               (None, None, 256)            33024     ['layer_normalization_1[0][0]'
+                                                                    ]                             
+                                                                                                  
+ conv1d_11 (Conv1D)          (None, None, 128)            49280     ['spatial_dropout1d_8[0][0]'] 
+                                                                                                  
+ dropout (Dropout)           (None, None, 256)            0         ['dense[0][0]']               
+                                                                                                  
+ batch_normalization_9 (Bat  (None, None, 128)            512       ['conv1d_11[0][0]']           
+ chNormalization)                                                                                 
+                                                                                                  
+ dense_1 (Dense)             (None, None, 128)            32896     ['dropout[0][0]']             
+                                                                                                  
+ spatial_dropout1d_9 (Spati  (None, None, 128)            0         ['batch_normalization_9[0][0]'
+ alDropout1D)                                                       ]                             
+                                                                                                  
+ add_2 (Add)                 (None, None, 128)            0         ['add_1[0][0]',               
+                                                                     'dense_1[0][0]']             
+                                                                                                  
+ add_10 (Add)                (None, None, 128)            0         ['spatial_dropout1d_9[0][0]', 
+                                                                     'add_9[0][0]']               
+                                                                                                  
+ bidirectional (Bidirection  (None, None, 256)            263168    ['add_2[0][0]']               
+ al)                                                                                              
+                                                                                                  
+ activation_4 (Activation)   (None, None, 128)            0         ['add_10[0][0]']              
+                                                                                                  
+ dropout_1 (Dropout)         (None, None, 256)            0         ['bidirectional[0][0]']       
+                                                                                                  
+ global_average_pooling1d (  (None, 128)                  0         ['activation_4[0][0]']        
+ GlobalAveragePooling1D)                                                                          
+                                                                                                  
+ global_max_pooling1d (Glob  (None, 128)                  0         ['activation_4[0][0]']        
+ alMaxPooling1D)                                                                                  
+                                                                                                  
+ bidirectional_1 (Bidirecti  (None, 128)                  164352    ['dropout_1[0][0]']           
+ onal)                                                                                            
+                                                                                                  
+ concatenate (Concatenate)   (None, 256)                  0         ['global_average_pooling1d[0][
+                                                                    0]',                          
+                                                                     'global_max_pooling1d[0][0]']
+                                                                                                  
+ dense_2 (Dense)             (None, 128)                  16512     ['bidirectional_1[0][0]']     
+                                                                                                  
+ dense_7 (Dense)             (None, 256)                  65792     ['concatenate[0][0]']         
+                                                                                                  
+ layer_normalization_2 (Lay  (None, 128)                  256       ['dense_2[0][0]']             
+ erNormalization)                                                                                 
+                                                                                                  
+ layer_normalization_11 (La  (None, 256)                  512       ['dense_7[0][0]']             
+ yerNormalization)                                                                                
+                                                                                                  
+ dropout_2 (Dropout)         (None, 128)                  0         ['layer_normalization_2[0][0]'
+                                                                    ]                             
+                                                                                                  
+ dropout_5 (Dropout)         (None, 256)                  0         ['layer_normalization_11[0][0]
+                                                                    ']                            
+                                                                                                  
+ dense_8 (Dense)             (None, 128)                  16512     ['dropout_2[0][0]']           
+                                                                                                  
+ dense_9 (Dense)             (None, 128)                  32896     ['dropout_5[0][0]']           
+                                                                                                  
+ concatenate_1 (Concatenate  (None, 256)                  0         ['dense_8[0][0]',             
+ )                                                                   'dense_9[0][0]']             
+                                                                                                  
+ dense_11 (Dense)            (None, 256)                  65792     ['concatenate_1[0][0]']       
+                                                                                                  
+ layer_normalization_12 (La  (None, 256)                  512       ['dense_11[0][0]']            
+ yerNormalization)                                                                                
+                                                                                                  
+ dropout_6 (Dropout)         (None, 256)                  0         ['layer_normalization_12[0][0]
+                                                                    ']                            
+                                                                                                  
+ dense_10 (Dense)            (None, 256)                  65792     ['concatenate_1[0][0]']       
+                                                                                                  
+ add_11 (Add)                (None, 256)                  0         ['dropout_6[0][0]',           
+                                                                     'dense_10[0][0]']            
+                                                                                                  
+ activation_5 (Activation)   (None, 256)                  0         ['add_11[0][0]']              
+                                                                                                  
+ dense_12 (Dense)            (None, 128)                  32896     ['activation_5[0][0]']        
+                                                                                                  
+ layer_normalization_13 (La  (None, 128)                  256       ['dense_12[0][0]']            
+ yerNormalization)                                                                                
+                                                                                                  
+ dropout_7 (Dropout)         (None, 128)                  0         ['layer_normalization_13[0][0]
+                                                                    ']                            
+                                                                                                  
+ dense_13 (Dense)            (None, 6)                    774       ['dropout_7[0][0]']           
+                                                                                                  
+==================================================================================================
+Total params: 1827782 (6.97 MB)
+Trainable params: 1825350 (6.96 MB)
+Non-trainable params: 2432 (9.50 KB)
+__________________________________________________________________________________________________
+Local test completed successfully! The model architecture is valid and compiles correctly.
+Script executed successfully!

@@ -1,0 +1,12 @@
+dataset:
+  csv_train: datasets/vocalsounds/laughter_manifest.csv
+  csv_val: datasets/vocalsounds/laughter_manifest.csv
+  sample_rate: 16000
+  num_classes: 1
+model:
+  backbone: wavlm_base
+  lr: 2e-5
+  batch_size: 32
+  epochs: 25
+  loss: BCEWithLogitsLoss
+log_dir: runs/vocalsound_wavlm

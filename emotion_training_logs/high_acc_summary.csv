@@ -1,0 +1,11 @@
+log_file,best_epoch,best_val_accuracy,last_epoch,last_val_accuracy
+training_audio_pooling_lstm_20250403_044105.log,105,0.8563,125,0.8523
+training_audio_pooling_lstm_20250329_062340.log,117,0.8534,125,0.8425
+training_branched_regularization.log,64,0.8481,74,0.847
+training_branched_sync_aug.log,50,0.8453,50,0.8453
+training_spectrogram_20250330_230900.log,122,0.8443,125,0.8402
+training_precomputed_cnn_lstm_20250405_072423.log,149,0.8437,175,0.8425
+training_branched_tcn.log,48,0.8436,50,0.8408
+training_branched_optimizer.log,74,0.8436,84,0.8386
+training_no_leakage_verification.log,45,0.8414,50,0.8408
+training_branched_cross_attention.log,48,0.8414,50,0.838

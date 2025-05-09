@@ -1,0 +1,44 @@
+{
+  "branched_regularization_sync_aug_tcn_large_fixed_v20250328_060012": {
+    "log_file": "training_branched_regularization_sync_aug_tcn_large_fixed_v20250328_060012.log",
+    "summary": {
+      "epochs_completed": 13,
+      "latest_val_accuracy": 0.6213,
+      "best_val_accuracy": 0.6316,
+      "best_epoch": 10,
+      "recent_trend": 0.01380000000000005
+    },
+    "metrics": {
+      "epoch": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13
+      ],
+      "val_accuracy": [
+        0.3345,
+        0.3839,
+        0.4046,
+        0.4851,
+        0.5368,
+        0.5494,
+        0.6075,
+        0.5868,
+        0.608,
+        0.6316,
+        0.5937,
+        0.5868,
+        0.6213
+      ]
+    }
+  }
+}

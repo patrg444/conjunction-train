@@ -1,0 +1,19 @@
+Searching for directories containing NPZ files...
+
+Found 1 directories with NPZ files:
+1. /home/ubuntu/wav2vec_sample/home/ubuntu/audio_emotion/models/wav2vec - contains ~96 NPZ files
+
+Analyzing sample files from each directory:
+✓ /home/ubuntu/wav2vec_sample/home/ubuntu/audio_emotion/models/wav2vec - WAV2VEC data with key 'wav2vec_features', ~96 files
+
+===== WAV2VEC Feature Files Summary =====
+Found 1 directories with WAV2VEC feature files, total: ~96 files
+
+Directory: /home/ubuntu/wav2vec_sample/home/ubuntu/audio_emotion/models/wav2vec
+Count: ~96 files
+Feature key: 'wav2vec_features'
+Sample keys: ['wav2vec_features', 'label', 'emotion', 'emotion_class']
+Example files:
+  - cremad_1001_MTI_ANG_XX.npz
+  - cremad_1002_IWW_SAD_XX.npz
+  - cremad_1002_TIE_HAP_XX.npz

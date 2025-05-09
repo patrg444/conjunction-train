@@ -1,0 +1,12 @@
+freq_mask_param: 10
+hubert_model_name: facebook/hubert-large-ls960-ft
+lr_head: 0.001
+lr_hubert: 1.0e-05
+lstm_hidden_dim: 256
+lstm_layers: 2
+num_classes: 8
+partial_unfreeze_epochs: 5
+time_mask_param: 50
+unfreeze_hubert: true
+use_specaugment: true
+warmup_epochs: 3

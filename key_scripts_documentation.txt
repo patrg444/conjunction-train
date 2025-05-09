@@ -1,0 +1,3074 @@
+KEY SCRIPTS DOCUMENTATION
+=========================
+
+FILE: scripts/process_ravdess_dataset.py
+========================================
+
+#!/usr/bin/env python3
+"""
+Process RAVDESS dataset to extract audio and video features with OpenSMILE.
+This script processes videos from the RAVDESS dataset until at least 250 segments
+are generated with 1-second window size and 0.5-second hop size.
+
+Enhanced features:
+- Command-line argument parsing for more flexibility
+- Option to process specific emotion categories or actors
+- Functionality to balance the dataset across emotion categories
+- Visualization of processed features
+- Option to validate the processed features
+- Fixed multiprocessing resource leak
+"""
+
+import os
+import sys
+import glob
+import logging
+import argparse
+import numpy as np
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+from multiprocessing import Pool, cpu_count, set_start_method
+from multimodal_preprocess import process_video_for_multimodal_lstm
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("process_ravdess.log"),
+        logging.StreamHandler()
+    ]
+)
+
+# RAVDESS emotion mapping
+EMOTION_MAP = {
+    "01": "neutral",
+    "02": "calm",
+    "03": "happy",
+    "04": "sad",
+    "05": "angry",
+    "06": "fearful",
+    "07": "disgust",
+    "08": "surprised"
+}
+
+# RAVDESS intensity mapping
+INTENSITY_MAP = {
+    "01": "normal",
+    "02": "strong"
+}
+
+def visualize_features(npz_file, output_dir=None):
+    """Visualize features from a processed NPZ file.
+    
+    Args:
+        npz_file: Path to NPZ file with processed features
+        output_dir: Directory to save visualization. If None, only shows plot
+    
+    Returns:
+        Path to saved visualization file if output_dir is provided, else None
+    """
+    try:
+        # Load the data
+        data = np.load(npz_file, allow_pickle=True)
+        
+        # Extract sequences
+        video_sequences = data['video_sequences']
+        audio_sequences = data['audio_sequences']
+        
+        if isinstance(video_sequences, np.ndarray) and video_sequences.dtype == np.dtype('O'):
+            # Handle object arrays
+            if len(video_sequences) == 0:
+                logging.error(f"No video sequences found in {npz_file}")
+                return None
+            
+            # Use the first sequence for visualization
+            video_seq = video_sequences[0]
+            audio_seq = audio_sequences[0]
+        else:
+            # Direct arrays
+            video_seq = video_sequences
+            audio_seq = audio_sequences
+        
+        # Create visualization
+        fig, axs = plt.subplots(2, 1, figsize=(12, 8))
+        
+        # Video features heatmap (using first 100 dimensions for visibility if too large)
+        max_dims_to_show = 100
+        video_data = video_seq[:, :max_dims_to_show] if video_seq.shape[1] > max_dims_to_show else video_seq
+        im1 = axs[0].imshow(video_data.T, aspect='auto', cmap='viridis')
+        axs[0].set_title(f'Video Features (showing {video_data.shape[1]} of {video_seq.shape[1]} dimensions)')
+        axs[0].set_xlabel('Time Steps')
+        axs[0].set_ylabel('Feature Dimensions')
+        plt.colorbar(im1, ax=axs[0])
+        
+        # Audio features heatmap
+        max_dims_to_show = 100
+        audio_data = audio_seq[:, :max_dims_to_show] if audio_seq.shape[1] > max_dims_to_show else audio_seq
+        im2 = axs[1].imshow(audio_data.T, aspect='auto', cmap='plasma')
+        axs[1].set_title(f'Audio Features (showing {audio_data.shape[1]} of {audio_seq.shape[1]} dimensions)')
+        axs[1].set_xlabel('Time Steps')
+        axs[1].set_ylabel('Feature Dimensions')
+        plt.colorbar(im2, ax=axs[1])
+        
+        # Add overall title
+        plt.suptitle(f'Features from {os.path.basename(npz_file)}', fontsize=16)
+        plt.tight_layout()
+        
+        # Save or show
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+            output_file = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(npz_file))[0]}_visualization.png")
+            plt.savefig(output_file, dpi=150)
+            plt.close()
+            logging.info(f"Saved visualization to {output_file}")
+            return output_file
+        else:
+            plt.show()
+            return None
+            
+    except Exception as e:
+        logging.error(f"Error visualizing features from {npz_file}: {str(e)}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return None
+
+def validate_processed_features(npz_file):
+    """Validate processed features from an NPZ file.
+    
+    Args:
+        npz_file: Path to NPZ file with processed features
+        
+    Returns:
+        Boolean indicating whether the file is valid
+    """
+    try:
+        # Load the data
+        data = np.load(npz_file, allow_pickle=True)
+        
+        # Check required keys
+        required_keys = ['video_sequences', 'audio_sequences', 'window_start_times']
+        for key in required_keys:
+            if key not in data:
+                logging.error(f"Missing required key {key} in {npz_file}")
+                return False
+        
+        # Check video sequences
+        video_sequences = data['video_sequences']
+        if len(video_sequences) == 0:
+            logging.error(f"Empty video sequences in {npz_file}")
+            return False
+            
+        # Check audio sequences
+        audio_sequences = data['audio_sequences']
+        if len(audio_sequences) == 0:
+            logging.error(f"Empty audio sequences in {npz_file}")
+            return False
+            
+        # Check matching sequence counts
+        if len(video_sequences) != len(audio_sequences):
+            logging.error(f"Mismatched sequence counts in {npz_file}: video={len(video_sequences)}, audio={len(audio_sequences)}")
+            return False
+            
+        # Everything looks good
+        return True
+        
+    except Exception as e:
+        logging.error(f"Error validating {npz_file}: {str(e)}")
+        return False
+
+def process_ravdess_dataset(
+    dataset_dir="data/RAVDESS",
+    output_dir="processed_features",
+    min_segments=250,
+    window_size=1.0,  # 1-second segments
+    hop_size=0.5,     # 0.5-second hop
+    max_videos=None,  # Maximum number of videos to process (None for unlimited)
+    n_workers=None,   # Number of parallel workers (None for auto)
+    emotions=None,    # List of emotion codes to process (None for all)
+    actors=None,      # List of actor IDs to process (None for all)
+    balance=False,    # Whether to balance examples across emotion categories
+    visualize=False,  # Whether to visualize processed features
+    validate=False    # Whether to validate processed features
+):
+    """Process RAVDESS dataset until at least min_segments are generated.
+    
+    Args:
+        dataset_dir: Directory containing RAVDESS dataset
+        output_dir: Directory to save processed features
+        min_segments: Minimum number of segments to generate
+        window_size: Time window size in seconds (1-second as requested)
+        hop_size: Step size between windows (0.5 seconds as requested)
+        max_videos: Maximum number of videos to process (None for all)
+        n_workers: Number of parallel workers (None for auto-detect)
+        emotions: List of emotion codes to process (None for all)
+        actors: List of actor IDs to process (None for all)
+        balance: Whether to balance examples across emotion categories
+        visualize: Whether to visualize processed features
+        validate: Whether to validate processed features
+        
+    Returns:
+        Tuple of (segment_count, video_count) indicating the number of segments
+        and videos processed.
+    """
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Create visualization directory if needed
+    if visualize:
+        os.makedirs(os.path.join(output_dir, "visualizations"), exist_ok=True)
+    
+    # Find all MP4 files in the dataset (RAVDESS uses MP4)
+    video_pattern = os.path.join(dataset_dir, "**", "*.mp4")
+    video_paths = glob.glob(video_pattern, recursive=True)
+    
+    if not video_paths:
+        logging.error(f"No videos found matching pattern {video_pattern}")
+        return 0, 0
+    
+    # Filter videos based on metadata (emotions, actors, balance)
+    if emotions or actors or balance:
+        original_count = len(video_paths)
+        video_paths = filter_videos_by_metadata(video_paths, emotions, actors, balance)
+        logging.info(f"Filtered from {original_count} to {len(video_paths)} videos based on metadata criteria")
+        
+        if not video_paths:
+            logging.error("No videos left after filtering")
+            return 0, 0
+    
+    # Shuffle videos to get a diverse selection of emotions and actors
+    import random
+    random.seed(42)  # For reproducibility
+    random.shuffle(video_paths)
+    
+    # Limit the number of videos if specified
+    if max_videos is not None:
+        video_paths = video_paths[:max_videos]
+    
+    logging.info(f"Found {len(video_paths)} videos in {dataset_dir}")
+    
+    # Process videos sequentially until we reach min_segments
+    segment_count = 0
+    processed_videos = 0
+    
+    # Determine the number of workers
+    if n_workers is None:
+        n_workers = max(1, cpu_count() - 1)  # Leave one CPU free
+    
+    logging.info(f"Processing videos with {n_workers} workers")
+    
+    # Process videos and count segments
+    # We'll use a small batch approach to monitor progress
+    batch_size = min(100, len(video_paths))
+    
+    for batch_start in range(0, len(video_paths), batch_size):
+        batch_end = min(batch_start + batch_size, len(video_paths))
+        batch_videos = video_paths[batch_start:batch_end]
+        
+        logging.info(f"Processing batch of {len(batch_videos)} videos (videos {batch_start+1}-{batch_end} of {len(video_paths)})")
+        
+        if n_workers > 1:
+            # Parallel processing with multiple workers
+            with Pool(n_workers) as pool:
+                args = [
+                    (video_path, output_dir, "VGG-Face", window_size, hop_size)
+                    for video_path in batch_videos
+                ]
+                
+                output_files = list(tqdm(
+                    pool.starmap(
+                        process_video_wrapper,
+                        args
+                    ),
+                    total=len(batch_videos),
+                    desc="Processing videos"
+                ))
+        else:
+            # Sequential processing
+            output_files = []
+            for video_path in tqdm(batch_videos, desc="Processing videos"):
+                output_file = process_video_wrapper(
+                    video_path, output_dir, "VGG-Face", window_size, hop_size
+                )
+                output_files.append(output_file)
+        
+        # Filter out None results and count successfully processed videos
+        output_files = [f for f in output_files if f]
+        processed_videos += len(output_files)
+        
+        # Count segments in output files
+        batch_segment_count = count_segments_in_files(output_files)
+        segment_count += batch_segment_count
+        
+        logging.info(f"Batch generated {batch_segment_count} segments, total now: {segment_count}")
+        
+        # Validate and visualize results if requested
+        if validate or visualize:
+            for npz_file in output_files:
+                if validate:
+                    is_valid = validate_processed_features(npz_file)
+                    if not is_valid:
+                        logging.warning(f"Validation failed for {npz_file}")
+                
+                if visualize:
+                    vis_output_dir = os.path.join(output_dir, "visualizations")
+                    vis_file = visualize_features(npz_file, vis_output_dir)
+                    if vis_file:
+                        logging.info(f"Created visualization: {vis_file}")
+        
+        # Check if we've reached the minimum number of segments
+        if segment_count >= min_segments:
+            logging.info(f"Reached target of {min_segments} segments after processing {processed_videos} videos")
+            break
+    
+    logging.info(f"Final results: {segment_count} segments from {processed_videos} videos")
+    
+    return segment_count, processed_videos
+
+def process_video_wrapper(video_path, output_dir, model_name, window_size, hop_size):
+    """Wrapper around process_video_for_multimodal_lstm to handle exceptions.
+    
+    This allows us to continue processing even if one video fails.
+    """
+    try:
+        return process_video_for_multimodal_lstm(
+            video_path=video_path,
+            output_dir=output_dir,
+            model_name=model_name,
+            window_size=window_size,
+            hop_size=hop_size
+        )
+    except Exception as e:
+        logging.error(f"Error processing {video_path}: {str(e)}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return None
+
+def count_segments_in_files(npz_files):
+    """Count the total number of segments in a list of NPZ files."""
+    segment_count = 0
+    
+    for npz_file in npz_files:
+        try:
+            data = np.load(npz_file, allow_pickle=True)
+            
+            if 'video_sequences' in data:
+                # Count the number of sequences
+                video_seqs = data['video_sequences']
+                if isinstance(video_seqs, np.ndarray):
+                    segment_count += len(video_seqs)
+        except Exception as e:
+            logging.error(f"Error counting segments in {npz_file}: {str(e)}")
+    
+    return segment_count
+
+def filter_videos_by_metadata(video_paths, emotions=None, actors=None, balance=False):
+    """Filter video paths based on metadata in filenames.
+    
+    Args:
+        video_paths: List of video paths
+        emotions: List of emotion codes to include (None for all)
+        actors: List of actor IDs to include (None for all)
+        balance: Whether to balance examples across emotion categories
+        
+    Returns:
+        Filtered list of video paths
+    """
+    if not emotions and not actors and not balance:
+        return video_paths
+    
+    filtered_paths = []
+    emotion_counts = {}
+    
+    for path in video_paths:
+        filename = os.path.basename(path)
+        parts = filename.split('-')
+        
+        # Check if filename matches expected format
+        if len(parts) < 3:
+            logging.warning(f"Skipping file with unexpected format: {filename}")
+            continue
+        
+        # Extract metadata
+        try:
+            actor_id = parts[0]
+            emotion_code = parts[2]
+            
+            # Apply filters
+            if emotions and emotion_code not in emotions:
+                continue
+                
+            if actors and actor_id not in actors:
+                continue
+                
+            # Track emotion counts for balancing
+            if balance:
+                if emotion_code not in emotion_counts:
+                    emotion_counts[emotion_code] = []
+                emotion_counts[emotion_code].append(path)
+            else:
+                filtered_paths.append(path)
+                
+        except Exception as e:
+            logging.warning(f"Error parsing metadata from {filename}: {str(e)}")
+            continue
+    
+    # If balancing, sample equal numbers from each emotion
+    if balance and emotion_counts:
+        # Find minimum count across all emotions
+        min_count = min(len(paths) for paths in emotion_counts.values())
+        
+        # Force at least 5 examples per emotion if available
+        min_count = max(min_count, min(5, min(len(paths) for paths in emotion_counts.values())))
+        
+        logging.info(f"Balancing dataset with {min_count} examples per emotion")
+        
+        # Sample from each emotion
+        for emotion, paths in emotion_counts.items():
+            import random
+            random.seed(42)  # For reproducibility
+            sampled_paths = random.sample(paths, min(min_count, len(paths)))
+            filtered_paths.extend(sampled_paths)
+            
+            emotion_name = EMOTION_MAP.get(emotion, f"unknown-{emotion}")
+            logging.info(f"Selected {len(sampled_paths)} examples for emotion: {emotion_name}")
+    
+    return filtered_paths
+
+def parse_arguments():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description='Process RAVDESS dataset for multimodal emotion recognition.')
+    
+    parser.add_argument('--dataset', type=str, default='data/RAVDESS',
+                        help='Directory containing RAVDESS dataset')
+    
+    parser.add_argument('--output', type=str, default='processed_features_large',
+                        help='Directory to save processed features')
+    
+    parser.add_argument('--min-segments', type=int, default=250,
+                        help='Minimum number of segments to generate')
+    
+    parser.add_argument('--window-size', type=float, default=2.0,
+                        help='Time window size in seconds (default: 2.0 seconds)')
+    
+    parser.add_argument('--hop-size', type=float, default=0.5,
+                        help='Step size between windows in seconds')
+    
+    parser.add_argument('--max-videos', type=int, default=None,
+                        help='Maximum number of videos to process (None for all)')
+    
+    parser.add_argument('--workers', type=int, default=None,
+                        help='Number of parallel workers (None for auto-detect)')
+    
+    parser.add_argument('--emotions', type=str, default=None,
+                        help='Comma-separated list of emotion codes to process (e.g., "03,04,05" for happy,sad,angry)')
+    
+    parser.add_argument('--actors', type=str, default=None,
+                        help='Comma-separated list of actor IDs to process (e.g., "01,02,03")')
+    
+    parser.add_argument('--balance', action='store_true',
+                        help='Balance examples across emotion categories')
+    
+    parser.add_argument('--visualize', action='store_true',
+                        help='Visualize processed features')
+    
+    parser.add_argument('--validate', action='store_true',
+                        help='Validate processed features')
+    
+    return parser.parse_args()
+
+def main():
+    """Main function to run the script."""
+    # Fix multiprocessing for macOS
+    try:
+        set_start_method('spawn')
+    except RuntimeError:
+        # Method already set
+        pass
+    
+    # Parse command line arguments
+    args = parse_arguments()
+    
+    # Process emotions and actors lists
+    emotions = args.emotions.split(',') if args.emotions else None
+    actors = args.actors.split(',') if args.actors else None
+    
+    # Number of parallel processes (leave one CPU free)
+    n_workers = args.workers if args.workers is not None else max(1, cpu_count() - 1)
+    
+    print("\n" + "=" * 60)
+    print(f"PROCESSING RAVDESS DATASET WITH OPENSMILE")
+    print("=" * 60)
+    print(f"Dataset directory: {args.dataset}")
+    print(f"Output directory: {args.output}")
+    print(f"Target segments: {args.min_segments}")
+    print(f"Segment window size: {args.window_size} seconds (increased from 1.0s to 2.0s for better context)")
+    print(f"Segment hop size: {args.hop_size} seconds")
+    print(f"Workers: {n_workers}")
+    
+    if emotions:
+        print(f"Processing only emotions: {[EMOTION_MAP.get(e, e) for e in emotions]}")
+    if actors:
+        print(f"Processing only actors: {actors}")
+    if args.balance:
+        print("Balancing examples across emotion categories")
+    if args.visualize:
+        print("Will visualize processed features")
+    if args.validate:
+        print("Will validate processed features")
+        
+    print("=" * 60 + "\n")
+    
+    # Process the dataset
+    segment_count, video_count = process_ravdess_dataset(
+        dataset_dir=args.dataset,
+        output_dir=args.output,
+        min_segments=args.min_segments,
+        window_size=args.window_size,
+        hop_size=args.hop_size,
+        max_videos=args.max_videos,
+        n_workers=n_workers,
+        emotions=emotions,
+        actors=actors,
+        balance=args.balance,
+        visualize=args.visualize,
+        validate=args.validate
+    )
+    
+    print("\n" + "=" * 60)
+    print(f"PROCESSING COMPLETE")
+    print("=" * 60)
+    print(f"Processed {video_count} videos")
+    print(f"Generated {segment_count} segments")
+    print(f"Data saved to {args.output}")
+    
+    if segment_count >= args.min_segments:
+        print(f"\n✅ Successfully generated at least {args.min_segments} segments with OpenSMILE!")
+    else:
+        print(f"\n❌ Failed to generate enough segments. Review the logs for errors.")
+    
+    print("=" * 60)
+
+if __name__ == "__main__":
+    main()
+
+
+================================================================================
+
+FILE: scripts/multimodal_preprocess.py
+======================================
+
+#!/usr/bin/env python3
+"""
+Multimodal preprocessing module for extracting synchronized audio and video features.
+This module extracts audio directly from video files to ensure perfect time alignment
+between audio and video modalities.
+"""
+
+import os
+import sys
+import glob
+import shutil
+import logging
+import subprocess
+import numpy as np
+import cv2
+from tqdm import tqdm
+from moviepy.editor import VideoFileClip, AudioFileClip
+from deepface import DeepFace
+from multiprocessing import Pool
+
+# Import our custom ARFF parser
+from utils import load_arff_features
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("multimodal_preprocess.log"),
+        logging.StreamHandler()
+    ]
+)
+
+# Global cache for DeepFace embeddings
+_deepface_cache = {}
+
+def extract_audio_from_video(video_path, output_dir="temp_extracted_audio", codec="pcm_s16le"):
+    """Extract audio track from video file and save as WAV.
+    
+    Args:
+        video_path: Path to the video file
+        output_dir: Directory to save extracted audio
+        codec: Audio codec to use for extraction
+        
+    Returns:
+        Path to the extracted audio file or None if extraction fails
+    """
+    # Create unique filename based on video filename
+    video_basename = os.path.basename(video_path)
+    audio_filename = os.path.splitext(video_basename)[0] + ".wav"
+    audio_path = os.path.join(output_dir, audio_filename)
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    try:
+        # Extract audio using moviepy
+        video = VideoFileClip(video_path)
+        audio = video.audio
+        if audio is not None:
+            audio.write_audiofile(audio_path, codec=codec, verbose=False, logger=None)
+            video.close()
+
+            # Add temporary code to check audio duration
+            try:
+                audio_clip = AudioFileClip(audio_path)
+                logging.info(f"Extracted audio duration: {audio_clip.duration} seconds") # Debug print
+                audio_clip.close()
+            except Exception as e:
+                logging.error(f"Error checking audio duration: {str(e)}")
+
+            return audio_path
+        else:
+            logging.warning(f"No audio track found in {video_path}")
+            video.close()
+            return None
+    except Exception as e:
+        logging.error(f"Error extracting audio from {video_path}: {str(e)}")
+        return None
+
+
+def get_embedding_dimension(model_name):
+    """Returns the embedding dimension for a given DeepFace model."""
+    if model_name == "VGG-Face":
+        return 4096
+    elif model_name == "Facenet":
+        return 128
+    elif model_name == "Facenet512":
+        return 512
+    elif model_name == "OpenFace":
+        return 128
+    elif model_name == "DeepFace":
+        return 4096
+    elif model_name == "ArcFace":
+        return 512
+    else:
+        raise ValueError(f"Unsupported model: {model_name}")
+
+
+def select_primary_face(embedding_objs):
+    """Selects the primary face embedding from a list of DeepFace embeddings.
+
+    Args:
+        embedding_objs: A list of embedding objects returned by DeepFace.represent
+
+    Returns:
+        The embedding of the primary face (largest bounding box area)
+    """
+    # Select the face with the largest bounding box area
+    if len(embedding_objs) == 1:
+        return embedding_objs[0]["embedding"]
+
+    areas = []
+    for obj in embedding_objs:
+        x, y, w, h = obj["facial_area"].values()
+        areas.append((w * h, obj["embedding"]))
+
+    # Sort by area (descending) and take the embedding with largest area
+    primary_embedding = max(areas, key=lambda x: x[0])[1]
+    return primary_embedding
+
+
+def extract_frame_level_video_features(video_path, model_name="VGG-Face", fps=None, use_cache=True):
+    """Extract features from video frames without averaging.
+
+    Args:
+        video_path: Path to the video file
+        model_name: Name of the DeepFace model to use
+        fps: Frames per second to sample (if None, uses video's original fps)
+        use_cache: Whether to use caching for DeepFace embeddings
+
+    Returns:
+        Tuple of (frame_features, timestamps)
+    """
+    # Create cache key based on video path and frame index
+    def get_cache_key(video_path, frame_idx):
+        return f"{video_path}_{model_name}_{frame_idx}"
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        logging.error(f"Failed to open video: {video_path}")
+        return None, None
+
+    # Get video metadata
+    video_fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = frame_count / video_fps if video_fps > 0 else 0
+
+    logging.info(f"Video {video_path}: {frame_count} frames, {video_fps} FPS, {duration:.2f}s duration")
+
+    # Determine sampling rate (use original or specified fps)
+    sampling_fps = fps if fps else video_fps
+
+    # Calculate frame indices to process
+    frame_indices = []
+    timestamps = []
+
+    # Sample frames at consistent intervals
+    for t in np.arange(0, duration, 1/sampling_fps):
+        frame_idx = int(t * video_fps)
+        if frame_idx < frame_count:
+            frame_indices.append(frame_idx)
+            timestamps.append(t)
+
+    logging.info(f"Processing {len(frame_indices)} frames at {sampling_fps} FPS")
+
+    # Extract features for each selected frame
+    frame_features = []
+    for idx in tqdm(frame_indices, desc=f"Extracting video features ({model_name})"):
+        cache_key = get_cache_key(video_path, idx)
+
+        # Check cache first if enabled
+        if use_cache and cache_key in _deepface_cache:
+            frame_features.append(_deepface_cache[cache_key])
+            continue
+
+        # Not in cache, need to process
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame = cap.read()
+        if ret:
+            try:
+                embedding_objs = DeepFace.represent(img_path=frame, model_name=model_name, enforce_detection=False)
+                embedding = select_primary_face(embedding_objs)
+
+                # Cache the result if enabled
+                if use_cache:
+                    _deepface_cache[cache_key] = embedding
+
+                frame_features.append(embedding)
+            except Exception as e:
+                logging.error(f"DeepFace error at frame {idx}: {str(e)}")
+                # Use zero vector on error
+                frame_features.append(np.zeros(get_embedding_dimension(model_name)))
+        else:
+            logging.warning(f"Failed to read frame {idx} from {video_path}")
+            frame_features.append(np.zeros(get_embedding_dimension(model_name)))
+
+    cap.release()
+    return frame_features, timestamps
+
+
+def extract_frame_level_audio_features(audio_path, config_file="opensmile-3.0.2-macos-armv8/opensmile-3.0.2-macos-armv8/config/egemaps/v02/eGeMAPSv02.conf", opensmile_path="/Users/patrickgloria/conjunction-train/opensmile-3.0.2-macos-armv8/opensmile-3.0.2-macos-armv8/bin/SMILExtract", temp_dir="temp_extracted_audio"):
+    """Extract audio features using openSMILE with eGeMAPS feature set.
+
+    Args:
+        audio_path: Path to the audio file.
+        config_file: Path to the openSMILE configuration file.
+        opensmile_path: Path to the openSMILE executable.
+        temp_dir: Directory to store temporary output files.
+
+    Returns:
+        Tuple of (features, timestamps) or (None, None) on error.
+    """
+    if audio_path is None:
+        logging.error("No audio path provided for feature extraction.")
+        return None, None
+
+    # Create temporary output directory if it doesn't exist
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    try:
+        # Create a unique output filename based on the audio file name
+        audio_basename = os.path.basename(audio_path)
+        output_file = os.path.join(temp_dir, f"{os.path.splitext(audio_basename)[0]}_egemaps.arff")
+        
+        # Run openSMILE with the standard eGeMAPS configuration using command-line arguments
+        command = [
+            opensmile_path,
+            "-C", config_file,
+            "-I", audio_path,
+            "-O", output_file,
+            "-instname", audio_basename,
+            "-loglevel", "1"
+        ]
+        
+        logging.info(f"Running openSMILE command: {' '.join(command)}")
+        
+        # Execute the command
+        result = subprocess.run(command, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            logging.error(f"Error running openSMILE: {result.stderr}")
+            logging.info("Falling back to backup openSMILE method for audio feature extraction")
+            return extract_audio_features_backup(audio_path)
+        
+        # Check if the output file exists
+        if not os.path.exists(output_file):
+            logging.error(f"openSMILE did not create output file: {output_file}")
+            return extract_audio_features_backup(audio_path)
+        
+        # Get audio duration for proper timestamp generation
+        audio_duration = 3.0  # Default if we can't determine
+        try:
+            audio_clip = AudioFileClip(audio_path)
+            audio_duration = audio_clip.duration
+            audio_clip.close()
+        except Exception as e:
+            logging.warning(f"Could not determine audio duration: {str(e)}")
+        
+        # Create a temporary directory just for this file to make parsing easier
+        temp_arff_dir = os.path.join(temp_dir, f"{os.path.splitext(audio_basename)[0]}_temp")
+        os.makedirs(temp_arff_dir, exist_ok=True)
+        
+        # Copy the ARFF file to the temporary directory
+        temp_arff_file = os.path.join(temp_arff_dir, os.path.basename(output_file))
+        shutil.copy(output_file, temp_arff_file)
+        
+        # Use our custom ARFF parser from utils.py
+        features, timestamps = load_arff_features(temp_arff_dir, frame_size=0.025, frame_step=0.01)
+        
+        if features.size == 0 or timestamps.size == 0:
+            logging.error("Failed to extract features from ARFF file")
+            return extract_audio_features_backup(audio_path)
+        
+        # If we have fewer features than expected based on audio duration, duplicate to match frame rate
+        expected_frames = int(audio_duration * 100)  # 100Hz is our target frame rate
+        if len(features) < expected_frames:
+            # Repeat the features to create a time series at 100Hz
+            logging.info(f"Creating time series from {len(features)} feature vectors")
+            feature_values = []
+            for _ in range(expected_frames):
+                feature_values.append(features[0])  # Use the same feature vector for all frames
+            
+            features = np.array(feature_values)
+            timestamps = np.linspace(0, audio_duration, expected_frames)
+        
+        logging.info(f"Extracted {features.shape[0]} audio frames with features of dimension {features.shape[1]} using openSMILE")
+        return features, timestamps
+    
+    except Exception as e:
+        logging.error(f"Error extracting audio features with openSMILE: {str(e)}")
+        import traceback
+        logging.error(traceback.format_exc())
+        # Fall back to backup method if openSMILE fails
+        return extract_audio_features_backup(audio_path)
+
+def extract_audio_features_backup(audio_path):
+    """Extract audio features using a simplified openSMILE configuration as backup method.
+    
+    Args:
+        audio_path: Path to the audio file.
+        
+    Returns:
+        Tuple of (features, timestamps) or (None, None) on error.
+    """
+    try:
+        # Create temporary output directory
+        temp_dir = "temp_backup_audio_features"
+        os.makedirs(temp_dir, exist_ok=True)
+        
+        # Create simplified output filename
+        audio_basename = os.path.basename(audio_path)
+        output_file = os.path.join(temp_dir, f"{os.path.splitext(audio_basename)[0]}_backup.arff")
+        
+        # Path to openSMILE executable
+        opensmile_path = "/Users/patrickgloria/conjunction-train/opensmile-3.0.2-macos-armv8/opensmile-3.0.2-macos-armv8/bin/SMILExtract"
+        
+        # Create a temporary configuration file with minimal settings
+        # This is a very minimal config that should work even if the standard config fails
+        temp_config_file = os.path.join(temp_dir, f"{os.path.splitext(audio_basename)[0]}_backup_config.conf")
+        
+        # Extremely simplified configuration with just MFCCs
+        backup_config = f"""
+[componentInstances:cComponentManager]
+instance[dataMemory].type=cDataMemory
+instance[waveIn].type=cWaveSource
+instance[frame].type=cFramer
+instance[win].type=cWindower
+instance[fft].type=cTransformFFT
+instance[mfcc].type=cMfcc
+instance[arffSink].type=cArffSink
+printLevelStats=0
+
+[waveIn:cWaveSource]
+filename = {audio_path}
+monoMixdown = 1
+
+[frame:cFramer]
+frameSize = 0.025
+frameStep = 0.01
+frameCenterSpecial = left
+
+[win:cWindower]
+winFunc = ham
+gain = 1.0
+
+[fft:cTransformFFT]
+fftLen = 512
+
+[mfcc:cMfcc]
+firstMfcc = 1
+lastMfcc = 13
+cepLifter = 22
+htkcompatible = 1
+
+[arffSink:cArffSink]
+filename = {output_file}
+relation = mfcc_backup
+instanceName = emotion
+frameIndex = 0
+frameTime = 1
+timestamp = 1
+"""
+        
+        # Write the backup configuration to file
+        with open(temp_config_file, "w") as f:
+            f.write(backup_config)
+        
+        # Run openSMILE with backup configuration
+        command = [
+            opensmile_path,
+            "-C", temp_config_file,
+            "-noconsoleoutput", "1",
+            "-appendLogfile", "0"
+        ]
+        
+        logging.info(f"Running backup openSMILE with simplified config: {' '.join(command)}")
+        
+        result = subprocess.run(command, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            logging.error(f"Backup openSMILE extraction failed: {result.stderr}")
+            # Create dummy features as last resort
+            timestamps = np.arange(0, 10, 0.01)  # 10 seconds of features at 100Hz
+            features = np.zeros((len(timestamps), 39))  # 13 MFCC * 3 (original + delta + delta-delta)
+            logging.warning("Using zero features as last resort fallback")
+            return features, timestamps
+        
+        # Create a temporary directory just for this file to make parsing easier
+        temp_arff_dir = os.path.join(temp_dir, f"{os.path.splitext(audio_basename)[0]}_temp")
+        os.makedirs(temp_arff_dir, exist_ok=True)
+        
+        # Copy the ARFF file to the temporary directory
+        temp_arff_file = os.path.join(temp_arff_dir, os.path.basename(output_file))
+        shutil.copy(output_file, temp_arff_file)
+        
+        # Use our custom ARFF parser from utils.py
+        features, timestamps = load_arff_features(temp_arff_dir, frame_size=0.025, frame_step=0.01)
+        
+        if features.size == 0 or timestamps.size == 0:
+            logging.error("Failed to extract features from backup ARFF file")
+            # Create dummy features as last resort
+            timestamps = np.arange(0, 10, 0.01)  # 10 seconds of features at 100Hz
+            features = np.zeros((len(timestamps), 39))  # 13 MFCC * 3 (original + delta + delta-delta)
+            logging.warning("Using zero features as last resort fallback after ARFF load failure")
+            return features, timestamps
+        
+        logging.info(f"Extracted {features.shape[0]} audio frames with features of dimension {features.shape[1]} using backup openSMILE method")
+        return features, timestamps
+        
+    except Exception as e:
+        logging.error(f"Error in backup audio feature extraction: {str(e)}")
+        import traceback
+        logging.error(traceback.format_exc())
+        
+        # Final fallback - create dummy features
+        timestamps = np.arange(0, 10, 0.01)  # 10 seconds of features at 100Hz
+        features = np.zeros((len(timestamps), 39))  # 13 MFCC * 3 (original + delta + delta-delta)
+        logging.warning("Using zero features as absolute last resort fallback")
+        return features, timestamps
+
+def align_audio_video_features(video_features, video_timestamps, audio_features, audio_timestamps, 
+                              window_size=1.0, hop_size=0.5, sub_window_size=0.2, sub_window_hop=0.1):
+    """Align audio and video features with temporal pooling approach.
+    
+    Args:
+        video_features: List of video feature vectors
+        video_timestamps: List of timestamps for video features
+        audio_features: List of audio feature vectors
+        audio_timestamps: List of timestamps for audio features
+        window_size: Overall size of time window in seconds
+        hop_size: Step size between windows in seconds
+        sub_window_size: Size of sub-windows for temporal pooling in seconds
+        sub_window_hop: Hop size for sub-windows in seconds
+        
+    Returns:
+        Dict containing separate video and audio sequences, each aligned to the same time windows
+    """
+    if video_features is None or audio_features is None:
+        logging.error("Missing features for alignment")
+        return None
+    
+    if len(video_features) == 0 or len(audio_features) == 0:
+        logging.error("Empty features for alignment")
+        return None
+    
+    logging.info(f"Aligning features: {len(video_features)} video frames, {len(audio_features)} audio frames")
+    logging.info(f"Video time range: {min(video_timestamps):.2f}s - {max(video_timestamps):.2f}s")
+    logging.info(f"Audio time range: {min(audio_timestamps):.2f}s - {max(audio_timestamps):.2f}s")
+    
+    # Get video and audio sampling rates (FPS)
+    video_fps = len(video_features) / (max(video_timestamps) - min(video_timestamps))
+    audio_fps = len(audio_features) / (max(audio_timestamps) - min(audio_timestamps))
+    
+    logging.info(f"Video FPS: {video_fps:.2f}, Audio FPS: {audio_fps:.2f}")
+    
+    # Initialize output sequences
+    video_sequences = []
+    audio_sequences = []
+    window_start_times = []
+    
+    # Create time windows with overlap
+    max_time = min(max(video_timestamps), max(audio_timestamps))
+    start_times = np.arange(0, max_time - window_size, hop_size)
+    
+    logging.info(f"Creating {len(start_times)} time windows of {window_size}s with {hop_size}s hop size")
+    
+    for start_time in tqdm(start_times, desc="Aligning features"):
+        end_time = start_time + window_size
+        
+        # 1. Temporal pooling for video features using sub-windows
+        video_sub_windows = []
+        sub_window_start_times = np.arange(start_time, end_time - sub_window_size + 0.001, sub_window_hop)
+        
+        for sub_start in sub_window_start_times:
+            sub_end = sub_start + sub_window_size
+            
+            # Get video frames in this sub-window
+            v_indices = [i for i, t in enumerate(video_timestamps) if sub_start <= t < sub_end]
+            
+            if v_indices:  # Only if we have frames in this sub-window
+                sub_window_video_features = np.array([video_features[i] for i in v_indices])
+                # Average the features in the sub-window (temporal pooling)
+                avg_video = np.mean(sub_window_video_features, axis=0)
+                video_sub_windows.append(avg_video)
+        
+        # 2. Get all audio frames for the entire window
+        a_indices = [i for i, t in enumerate(audio_timestamps) if start_time <= t < end_time]
+        window_audio_features = np.array([audio_features[i] for i in a_indices])
+        
+        # Only create sequences if we have both video and audio data
+        if len(video_sub_windows) > 0 and len(window_audio_features) > 0:
+            video_sequences.append(np.array(video_sub_windows))
+            audio_sequences.append(window_audio_features)
+            window_start_times.append(start_time)
+    
+    # Get dimensions carefully to avoid AttributeError
+    video_dim = 0
+    audio_dim = 0
+    
+    if len(video_features) > 0:
+        # Convert the first element to a numpy array if it's not already
+        first_video_feature = np.array(video_features[0])
+        video_dim = first_video_feature.shape[0]
+    
+    if isinstance(audio_features, np.ndarray) and audio_features.shape[0] > 0:
+        audio_dim = audio_features.shape[1]
+    elif len(audio_features) > 0:
+        # Handle the case where audio_features is a list
+        audio_dim = len(audio_features[0])
+    
+    result = {
+        'video_sequences': video_sequences,
+        'audio_sequences': audio_sequences,
+        'window_start_times': window_start_times,
+        'video_dim': video_dim,
+        'audio_dim': audio_dim
+    }
+    
+    if len(video_sequences) > 0:
+        logging.info(f"Created {len(video_sequences)} aligned sequences")
+        logging.info(f"Video sequence shape: {video_sequences[0].shape}, Audio sequence shape: {audio_sequences[0].shape}")
+    
+    return result
+
+def create_sequences(aligned_features, window_size, overlap):
+    """Create sequences of aligned features for LSTM.
+
+    Args:
+        aligned_features: Array of aligned features.
+        window_size: Number of frames in each sequence.
+        overlap: Number of frames to overlap between sequences.
+
+    Returns:
+        Tuple of (sequences, sequence_lengths).
+    """
+    if aligned_features is None or len(aligned_features) == 0:
+        logging.error("No aligned features to create sequences from")
+        return None, None
+
+    sequences = []
+    sequence_lengths = []
+
+   # Slide window over aligned features
+    for i in range(0, len(aligned_features) - int(window_size) + 1, int(window_size) - int(overlap)):
+        seq = aligned_features[i:i+int(window_size)]
+        if len(seq) == int(window_size):  # Ensure complete sequence
+            sequences.append(seq)
+            sequence_lengths.append(len(seq))
+        else:
+            # For the last incomplete sequence, we can either pad or discard.
+            # Here, we'll include it and track its actual length.
+            padded_seq = np.zeros((int(window_size), aligned_features.shape[1]))
+            padded_seq[:len(seq)] = seq
+            sequences.append(padded_seq)
+            sequence_lengths.append(len(seq))
+
+    return np.array(sequences), np.array(sequence_lengths)
+
+def pad_sequences(sequences, max_length=None, padding='post'):
+    """Pad sequences to the same length.
+    
+    Args:
+        sequences: List of sequences (arrays)
+        max_length: Maximum length to pad to (if None, uses longest sequence)
+        padding: 'pre' or 'post' to pad at beginning or end of sequences
+        
+    Returns:
+        Padded sequences array and original sequence lengths
+    """
+    # Get sequence lengths and maximum length
+    sequence_lengths = np.array([len(seq) for seq in sequences])
+    if max_length is None:
+        max_length = np.max(sequence_lengths)
+    
+    # Get feature dimension
+    feature_dim = sequences[0].shape[1] if sequences[0].ndim > 1 else 1
+    
+    # Initialize padded sequences array
+    padded_seqs = np.zeros((len(sequences), max_length, feature_dim))
+    
+    # Fill in the actual sequences
+    for i, seq in enumerate(sequences):
+        if padding == 'post':
+            padded_seqs[i, :len(seq)] = seq
+        else:  # 'pre'
+            padded_seqs[i, -len(seq):] = seq
+    
+    return padded_seqs, sequence_lengths
+
+def process_video_for_multimodal_lstm(
+    video_path,
+    output_dir="processed_features",
+    model_name="VGG-Face",
+    window_size=1.0,  # Changed from 2.0 to 1.0 for 1-second segments
+    hop_size=0.5,     # Kept at 0.5 as per requirements
+    sub_window_size=0.2,
+    sub_window_hop=0.1
+):
+    """Complete pipeline to process video for multimodal LSTM with temporal pooling.
+
+    Args:
+        video_path: Path to the video file
+        output_dir: Directory to save processed features
+        model_name: DeepFace model to use
+        window_size: Time window size in seconds for feature alignment (2-second segments)
+        hop_size: Step size between windows in seconds
+        sub_window_size: Size of sub-windows for temporal pooling in seconds
+        sub_window_hop: Hop size for sub-windows in seconds
+
+    Returns:
+        Path to the saved feature file or None if processing fails
+    """
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+
+    logging.info(f"Processing video: {video_path}")
+
+    # Get emotion label from filename
+    try:
+        filename = os.path.basename(video_path)
+        parts = filename.split('-')
+        if len(parts) >= 3:  # RAVDESS format
+            emotion_code = int(parts[2])
+            # Map to 0-based index for RAVDESS (1-8 -> 0-7)
+            emotion_label = emotion_code - 1
+            logging.info(f"Extracted emotion label from filename: {emotion_label}")
+        else:
+            # For other datasets or unknown format
+            emotion_label = -1
+            logging.warning(f"Could not extract emotion label from filename: {filename}")
+    except Exception as e:
+        emotion_label = -1
+        logging.warning(f"Error extracting emotion label: {str(e)}")
+
+    # 1. Extract audio from video
+    audio_path = extract_audio_from_video(video_path)
+    if audio_path is None:
+        logging.error(f"Failed to extract audio from {video_path}")
+        return None
+
+    logging.info(f"Extracted audio to: {audio_path}")
+
+    # 2. Extract frame-level features
+    video_features, video_timestamps = extract_frame_level_video_features(
+        video_path, model_name=model_name
+    )
+    if video_features is None:
+        logging.error(f"Failed to extract video features from {video_path}")
+        return None
+
+    logging.info(f"Extracted {len(video_features)} video frames with features of dimension {len(video_features[0])}")
+
+    audio_features, audio_timestamps = extract_frame_level_audio_features(audio_path)
+    if audio_features is None:
+        logging.error(f"Failed to extract audio features from {audio_path}")
+        return None
+
+    logging.info(f"Extracted {len(audio_features)} audio frames with features of dimension {audio_features.shape[1]}")
+
+    # 3. Align features with temporal pooling
+    aligned_data = align_audio_video_features(
+        video_features, video_timestamps,
+        audio_features, audio_timestamps,
+        window_size=window_size, 
+        hop_size=hop_size,
+        sub_window_size=sub_window_size,
+        sub_window_hop=sub_window_hop
+    )
+
+    if aligned_data is None or 'video_sequences' not in aligned_data or len(aligned_data['video_sequences']) == 0:
+        logging.error(f"Failed to align features for {video_path}")
+        return None
+
+    video_sequences = aligned_data['video_sequences']
+    audio_sequences = aligned_data['audio_sequences']
+    
+    logging.info(f"Created {len(video_sequences)} aligned sequences")
+    
+    # 5. Save processed data
+    output_file = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(video_path))[0]}.npz")
+    
+    # Convert sequences to object arrays to handle variable sizes
+    video_seq_obj = np.empty(len(video_sequences), dtype=object)
+    audio_seq_obj = np.empty(len(audio_sequences), dtype=object)
+    
+    for i in range(len(video_sequences)):
+        video_seq_obj[i] = video_sequences[i]
+        audio_seq_obj[i] = audio_sequences[i]
+        
+    # Save as compressed NPZ file with object arrays
+    np.savez_compressed(
+        output_file,
+        video_sequences=video_seq_obj,
+        audio_sequences=audio_seq_obj,
+        window_start_times=aligned_data['window_start_times'],
+        video_dim=aligned_data['video_dim'],
+        audio_dim=aligned_data['audio_dim'],
+        emotion_label=emotion_label,
+        params={
+            'model_name': model_name,
+            'window_size': window_size,
+            'hop_size': hop_size,
+            'sub_window_size': sub_window_size,
+            'sub_window_hop': sub_window_hop
+        }
+    )
+
+    logging.info(f"Saved processed data to: {output_file}")
+
+    return output_file
+
+def process_dataset_videos(video_dir, pattern="*.flv", output_dir="processed_features", n_workers=4, **kwargs):
+    """Process all videos in a directory.
+
+    Args:
+        video_dir: Directory containing video files
+        pattern: File pattern to match (e.g., "*.flv" for CREMA-D)
+        output_dir: Directory to save processed features
+        n_workers: Number of worker processes for parallel processing
+        **kwargs: Additional arguments to pass to process_video_for_multimodal_lstm
+
+    Returns:
+        List of paths to processed feature files
+    """
+    video_paths = glob.glob(os.path.join(video_dir, pattern))
+    if not video_paths:
+        logging.error(f"No videos found matching pattern {pattern} in {video_dir}")
+        return []
+
+    logging.info(f"Found {len(video_paths)} videos matching pattern {pattern} in {video_dir}")
+
+    # Create output directory
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Process videos sequentially (for now)
+    output_files = []
+
+    for video_path in tqdm(video_paths, desc=f"Processing videos ({pattern})"):
+        output_file = process_video_for_multimodal_lstm(
+            video_path=video_path,
+            output_dir=output_dir,
+            **kwargs
+        )
+        if output_file:
+            output_files.append(output_file)
+
+    # Parallel processing (commented out for debugging purposes)
+    # with Pool(n_workers) as pool:
+    #     args = [(video_path, config_file, output_dir) for video_path in video_paths]
+    #     output_files = list(tqdm(
+    #         pool.imap(lambda x: process_video_for_multimodal_lstm(*x, **kwargs), args),
+    #         total=len(video_paths),
+    #         desc=f"Processing videos ({pattern})"
+    #     ))
+
+    # Filter out None results
+    output_files = [f for f in output_files if f]
+
+    logging.info(f"Successfully processed {len(output_files)} out of {len(video_paths)} videos")
+
+    return output_files
+
+if __name__ == "__main__":
+    # Check command line arguments
+    if len(sys.argv) > 1:
+        input_path = sys.argv[1]
+    else:
+        input_path = "data/CREMA-D/VideoFlash"
+    
+    output_dir = "processed_features"
+    
+    # Check if input is a directory or a file
+    if os.path.isdir(input_path):
+        # Process videos in directory
+        # For CREMA-D
+        video_ext = "*.flv"
+        # For RAVDESS
+        if "RAVDESS" in input_path:
+            video_ext = "*.mp4"
+            
+        video_paths = glob.glob(os.path.join(input_path, video_ext))  # Process all available videos
+        
+        if not video_paths:
+            logging.error(f"No videos found in {input_path} matching {video_ext}")
+            sys.exit(1)
+        
+        logging.info(f"Processing {len(video_paths)} sample videos from {input_path}")
+        
+        for video_path in video_paths:
+            output_file = process_video_for_multimodal_lstm(
+                video_path=video_path,
+                output_dir=output_dir
+            )
+            if output_file:
+                logging.info(f"Successfully processed {video_path} -> {output_file}")
+            else:
+                logging.error(f"Failed to process {video_path}")
+    
+    elif os.path.isfile(input_path):
+        # Process single video file
+        logging.info(f"Processing single video file: {input_path}")
+        output_file = process_video_for_multimodal_lstm(
+            video_path=input_path,
+            output_dir=output_dir
+        )
+        if output_file:
+            logging.info(f"Successfully processed {input_path} -> {output_file}")
+        else:
+            logging.error(f"Failed to process {input_path}")
+    
+    else:
+        logging.error(f"Input path does not exist: {input_path}")
+        sys.exit(1)
+
+
+================================================================================
+
+FILE: scripts/train_branched.py
+===============================
+
+#!/usr/bin/env python3
+"""
+Training script for the multimodal emotion recognition model with branched LSTM architecture.
+"""
+
+import os
+import sys
+import glob
+import logging
+import numpy as np
+import tensorflow as tf
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, LSTM, Dense, concatenate, Dropout, Bidirectional, TimeDistributed, Conv1D, MaxPooling1D
+from tensorflow.keras.layers import Attention, MultiHeadAttention
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+from tensorflow.keras.utils import to_categorical
+from synchronize_test import parse_ravdess_filename
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("train_branched.log"),
+        logging.StreamHandler()
+    ]
+)
+
+def load_data(data_dir, dataset_name):
+    """Loads preprocessed data and labels from a directory.
+
+    Args:
+        data_dir: Directory containing the preprocessed .npz files.
+        dataset_name: name of the dataset ('RAVDESS' or 'CREMA-D')
+
+    Returns:
+        Tuple: (video_sequences, audio_sequences, labels, filenames)
+               - video_sequences is a list of video feature sequences
+               - audio_sequences is a list of audio feature sequences
+               - labels is a list of corresponding emotion labels (numeric)
+               - filenames is a list of the base filenames
+    """
+    video_sequences = []
+    audio_sequences = []
+    labels = []
+    filenames = []
+    
+    file_pattern = os.path.join(data_dir, "*.npz")
+    files = glob.glob(file_pattern)
+
+    if not files:
+        logging.error(f"No .npz files found in {data_dir}")
+        return None, None, None, None
+
+    for file_path in files:
+        try:
+            data = np.load(file_path, allow_pickle=True)
+            
+            # Check for new format with separate video and audio sequences
+            if 'video_sequences' in data and 'audio_sequences' in data:
+                # Get video sequences
+                video_seqs = data['video_sequences']
+                # Get audio sequences
+                audio_seqs = data['audio_sequences']
+                
+                # Get the base filename without extension
+                base_filename = os.path.splitext(os.path.basename(file_path))[0]
+                
+                # Get emotion label
+                if 'emotion_label' in data:
+                    emotion_labels = data['emotion_label']
+                    
+                    # Handle scalar emotion label (single integer)
+                    if np.isscalar(emotion_labels) or (isinstance(emotion_labels, np.ndarray) and emotion_labels.size == 1):
+                        # Convert scalar to array with the value repeated for each sequence
+                        emotion_label_value = emotion_labels.item() if isinstance(emotion_labels, np.ndarray) else emotion_labels
+                        emotion_labels = np.array([emotion_label_value] * len(video_seqs))
+                    elif not isinstance(emotion_labels, np.ndarray):
+                        # Convert other types to numpy array
+                        emotion_labels = np.array([emotion_labels])
+                else:
+                    # Try to parse from filename if not in the file
+                    emotion_info = None
+                    if dataset_name == 'RAVDESS':
+                        emotion_info = parse_ravdess_filename(file_path)
+                    
+                    if emotion_info:
+                        emotion_labels = np.array([emotion_info['numeric']] * len(video_seqs))
+                    else:
+                        logging.warning(f"Could not find emotion label for {file_path}, skipping.")
+                        continue
+                
+                # Add data to our collections
+                for i in range(len(video_seqs)):
+                    video_sequences.append(video_seqs[i])
+                    
+                    # Handle audio sequences
+                    # For audio, we need to ensure each sequence has the same length
+                    # This is for demo - in practice, you might use more sophisticated
+                    # sequence alignment techniques
+                    audio_sequences.append(audio_seqs[i])
+                    
+                    # Add label and filename for each sequence
+                    if len(emotion_labels) == 1:
+                        # If there's only one label for all sequences
+                        labels.append(emotion_labels[0])
+                    else:
+                        # If there's a label per sequence
+                        labels.append(emotion_labels[i])
+                    
+                    filenames.append(base_filename)
+            
+            else:
+                logging.warning(f"{file_path} does not contain 'video_sequences' and 'audio_sequences'. Trying legacy format...")
+                
+                # Try legacy format (fallback for older files)
+                if 'sequences' in data and 'sequence_lengths' in data:
+                    logging.warning(f"Found legacy format in {file_path}. This won't work with the dual-stream model.")
+                else:
+                    logging.error(f"Unrecognized data format in {file_path}, skipping.")
+                continue
+
+        except Exception as e:
+            logging.error(f"Error loading data from {file_path}: {str(e)}")
+            import traceback
+            logging.error(traceback.format_exc())
+            continue
+
+    logging.info(f"Loaded {len(video_sequences)} video sequences and {len(audio_sequences)} audio sequences")
+    
+    return video_sequences, audio_sequences, labels, filenames
+
+def define_branched_model(video_input_shape, audio_input_shape, num_classes):
+    """Defines the branched LSTM model architecture with attention mechanisms.
+
+    Args:
+        video_input_shape: Shape of the video input data (sequence_length, feature_dim).
+        audio_input_shape: Shape of the audio input data (sequence_length, feature_dim).
+        num_classes: Number of emotion classes.
+
+    Returns:
+        Compiled Keras model.
+    """
+    # Define inputs for both streams
+    video_input = Input(shape=video_input_shape, name='video_input')
+    audio_input = Input(shape=audio_input_shape, name='audio_input')
+    
+    # ---- Video Branch 1: Standard LSTM ----
+    video_branch1 = LSTM(128, return_sequences=True, name='video_branch1_lstm1')(video_input)
+    video_branch1 = Dropout(0.3)(video_branch1)
+    video_branch1 = LSTM(64, name='video_branch1_lstm2')(video_branch1)
+    
+    # ---- Video Branch 2: Bidirectional LSTM ----
+    video_branch2_seq = Bidirectional(LSTM(128, return_sequences=True), name='video_branch2_bilstm1')(video_input)
+    video_branch2_seq = Dropout(0.3)(video_branch2_seq)
+    
+    # Add self-attention to video branch 2
+    try:
+        # Using TensorFlow 2.x MultiHeadAttention if available
+        video_branch2_attn = MultiHeadAttention(
+            num_heads=4, key_dim=32, name="video_self_attention"
+        )(video_branch2_seq, video_branch2_seq)
+        video_branch2_seq = video_branch2_attn + video_branch2_seq  # Residual connection
+    except Exception as e:
+        logging.warning(f"Could not use MultiHeadAttention: {str(e)}. Using regular LSTM instead.")
+        pass  # Fall back to regular processing if MultiHeadAttention fails
+
+    video_branch2 = Bidirectional(LSTM(64), name='video_branch2_bilstm2')(video_branch2_seq)
+    
+    # ---- Audio Branch 1: Standard LSTM ----
+    audio_branch1 = LSTM(128, return_sequences=True, name='audio_branch1_lstm1')(audio_input)
+    audio_branch1 = Dropout(0.3)(audio_branch1)
+    audio_branch1 = LSTM(64, name='audio_branch1_lstm2')(audio_branch1)
+    
+    # ---- Audio Branch 2: Bidirectional LSTM ----
+    audio_branch2_seq = Bidirectional(LSTM(128, return_sequences=True), name='audio_branch2_bilstm1')(audio_input)
+    audio_branch2_seq = Dropout(0.3)(audio_branch2_seq)
+    
+    # Add self-attention to audio branch 2
+    try:
+        # Using TensorFlow 2.x MultiHeadAttention if available
+        audio_branch2_attn = MultiHeadAttention(
+            num_heads=4, key_dim=32, name="audio_self_attention"
+        )(audio_branch2_seq, audio_branch2_seq)
+        audio_branch2_seq = audio_branch2_attn + audio_branch2_seq  # Residual connection
+    except Exception as e:
+        logging.warning(f"Could not use MultiHeadAttention: {str(e)}. Using regular LSTM instead.")
+        pass  # Fall back to regular processing if MultiHeadAttention fails
+        
+    audio_branch2 = Bidirectional(LSTM(64), name='audio_branch2_bilstm2')(audio_branch2_seq)
+    
+    # ---- Audio Branch 3: Conv1D + LSTM ----
+    audio_branch3 = Conv1D(64, kernel_size=3, padding='same', activation='relu', name='audio_branch3_conv1')(audio_input)
+    audio_branch3 = MaxPooling1D(pool_size=2, name='audio_branch3_pool1')(audio_branch3)
+    audio_branch3 = Dropout(0.3)(audio_branch3)
+    audio_branch3 = LSTM(64, name='audio_branch3_lstm')(audio_branch3)
+    
+    # ---- Video modality fusion ----
+    video_fusion = concatenate([video_branch1, video_branch2], name='video_fusion')
+    video_fusion = Dense(128, activation='relu', name='video_fusion_dense')(video_fusion)
+    video_fusion = Dropout(0.4)(video_fusion)
+    
+    # ---- Audio modality fusion ----
+    audio_fusion = concatenate([audio_branch1, audio_branch2, audio_branch3], name='audio_fusion')
+    audio_fusion = Dense(128, activation='relu', name='audio_fusion_dense')(audio_fusion)
+    audio_fusion = Dropout(0.4)(audio_fusion)
+    
+    # ---- Cross-modal fusion with attention (instead of simple concatenation) ----
+    try:
+        # Reshape for compatibility with attention mechanism
+        video_fusion_reshaped = tf.expand_dims(video_fusion, axis=1)  # [batch, 1, features]
+        audio_fusion_reshaped = tf.expand_dims(audio_fusion, axis=1)  # [batch, 1, features]
+        
+        # Cross-modal attention (video attending to audio)
+        video_attends_audio = Attention(name='video_audio_attention')([video_fusion_reshaped, audio_fusion_reshaped])
+        video_attends_audio = tf.squeeze(video_attends_audio, axis=1)
+        
+        # Cross-modal attention (audio attending to video)
+        audio_attends_video = Attention(name='audio_video_attention')([audio_fusion_reshaped, video_fusion_reshaped])
+        audio_attends_video = tf.squeeze(audio_attends_video, axis=1)
+        
+        # Weighted combination with original features
+        video_with_context = concatenate([video_fusion, audio_attends_video], name='video_with_audio_context')
+        audio_with_context = concatenate([audio_fusion, video_attends_audio], name='audio_with_video_context')
+        
+        # Final multimodal fusion
+        cross_modal_fusion = concatenate([video_with_context, audio_with_context], name='cross_modal_fusion')
+    except Exception as e:
+        logging.warning(f"Could not use cross-modal attention: {str(e)}. Falling back to simple concatenation.")
+        # Fallback to standard concatenation if attention fails
+        cross_modal_fusion = concatenate([video_fusion, audio_fusion], name='cross_modal_fusion_fallback')
+    
+    # ---- Final classification layers ----
+    dense1 = Dense(256, activation='relu', name='dense1')(cross_modal_fusion)
+    dropout = Dropout(0.5)(dense1)
+    dense2 = Dense(128, activation='relu', name='dense2')(dropout)
+    dropout2 = Dropout(0.3)(dense2)
+    
+    # Output layer
+    output_layer = Dense(num_classes, activation='softmax', name='output')(dropout2)
+    
+    # Create the branched model
+    model = Model(inputs=[video_input, audio_input], outputs=output_layer)
+    
+    return model
+
+def compile_model(model, learning_rate=0.001):
+    """Compiles the Keras model.
+
+    Args:
+        model: Keras model to compile.
+        learning_rate: Learning rate for the optimizer.
+    """
+    optimizer = Adam(learning_rate=learning_rate)
+    model.compile(
+        optimizer=optimizer,
+        loss='categorical_crossentropy',
+        metrics=[
+            'accuracy',
+            tf.keras.metrics.Precision(name='precision'),
+            tf.keras.metrics.Recall(name='recall'),
+            # F1-score can be calculated from precision and recall
+        ]
+    )
+
+def create_multimodal_datasets(video_sequences, audio_sequences, labels, filenames, test_size=0.1, val_size=0.1, random_state=42):
+    """Creates training, validation, and test datasets for multimodal data with video-level separation.
+
+    Args:
+        video_sequences: List of video feature sequences.
+        audio_sequences: List of audio feature sequences.
+        labels: List of corresponding labels.
+        filenames: List of source video filenames for each segment.
+        test_size: Proportion of data for testing.
+        val_size: Proportion of data for validation.
+        random_state: Random seed for reproducibility.
+
+    Returns:
+        Tuple containing training, validation, and test data and labels.
+    """
+    if len(video_sequences) == 0 or len(audio_sequences) == 0:
+        logging.error("Empty video or audio sequences provided.")
+        return None
+    
+    if len(video_sequences) != len(audio_sequences) or len(video_sequences) != len(labels) or len(video_sequences) != len(filenames):
+        logging.error(f"Mismatched data lengths: {len(video_sequences)} video, {len(audio_sequences)} audio, "
+                     f"{len(labels)} labels, {len(filenames)} filenames")
+        return None
+
+    # Convert labels to numpy array
+    labels_array = np.array(labels)
+    
+    # Group segments by source video
+    unique_videos = {}  # Dictionary: video_name -> list of indices
+    for i, fname in enumerate(filenames):
+        if fname not in unique_videos:
+            unique_videos[fname] = []
+        unique_videos[fname].append(i)
+    
+    logging.info(f"Data contains segments from {len(unique_videos)} unique videos")
+    
+    # Special handling for very small datasets
+    if len(unique_videos) < 3:
+        logging.warning(f"Not enough unique videos ({len(unique_videos)}) for proper train/val/test split.")
+        logging.warning("Using all data for all splits to continue with testing.")
+        
+        # Use all data for all splits
+        all_indices = list(range(len(video_sequences)))
+        return (
+            [video_sequences[i] for i in all_indices],
+            [audio_sequences[i] for i in all_indices],
+            labels_array[all_indices],
+            [video_sequences[i] for i in all_indices],
+            [audio_sequences[i] for i in all_indices],
+            labels_array[all_indices],
+            [video_sequences[i] for i in all_indices],
+            [audio_sequences[i] for i in all_indices],
+            labels_array[all_indices]
+        )
+    
+    # Get list of unique video names
+    video_names = list(unique_videos.keys())
+    
+    # Random state for reproducibility
+    np.random.seed(random_state)
+    np.random.shuffle(video_names)
+    
+    # Calculate split points
+    n_videos = len(video_names)
+    n_test = max(1, int(n_videos * test_size))
+    n_val = max(1, int(n_videos * val_size))
+    n_train = n_videos - n_test - n_val
+    
+    # Split at the video level
+    train_videos = video_names[:n_train]
+    val_videos = video_names[n_train:n_train+n_val]
+    test_videos = video_names[n_train+n_val:]
+    
+    logging.info(f"Video-level split: {len(train_videos)} train, {len(val_videos)} val, {len(test_videos)} test")
+    
+    # Collect indices for each split from the grouped videos
+    train_idx = []
+    for v in train_videos:
+        train_idx.extend(unique_videos[v])
+    
+    val_idx = []
+    for v in val_videos:
+        val_idx.extend(unique_videos[v])
+    
+    test_idx = []
+    for v in test_videos:
+        test_idx.extend(unique_videos[v])
+    
+    logging.info(f"Segment counts: {len(train_idx)} train, {len(val_idx)} val, {len(test_idx)} test")
+    
+    # Verify no overlap between sets
+    train_set = set(train_idx)
+    val_set = set(val_idx)
+    test_set = set(test_idx)
+    
+    if len(train_set.intersection(val_set)) > 0 or len(train_set.intersection(test_set)) > 0 or len(val_set.intersection(test_set)) > 0:
+        logging.error("Data leakage detected! Segments appear in multiple splits.")
+    else:
+        logging.info("No data leakage detected. Train/val/test splits are properly separated.")
+        
+    # Report distribution of emotion labels in each split
+    # Convert to scalar integer labels if one-hot encoded
+    scalar_labels = []
+    if len(labels.shape) > 1 and labels.shape[1] > 1:
+        # Convert one-hot encoded labels to scalar
+        scalar_labels = np.argmax(labels, axis=1)
+    else:
+        # Already scalar labels
+        scalar_labels = labels.flatten() if hasattr(labels, 'flatten') else np.array(labels)
+    
+    unique_labels = set(scalar_labels.tolist())
+    if len(unique_labels) <= 10:  # Only for small number of classes
+        train_labels = [scalar_labels[i] for i in train_idx]
+        val_labels = [scalar_labels[i] for i in val_idx]
+        test_labels = [scalar_labels[i] for i in test_idx]
+        
+        for split_name, split_labels in [("Train", train_labels), ("Val", val_labels), ("Test", test_labels)]:
+            label_counts = {}
+            for lbl in split_labels:
+                if lbl not in label_counts:
+                    label_counts[lbl] = 0
+                label_counts[lbl] += 1
+            logging.info(f"{split_name} label distribution: {label_counts}")
+    
+    # Create the split datasets
+    X_train_video = [video_sequences[i] for i in train_idx]
+    X_train_audio = [audio_sequences[i] for i in train_idx]
+    y_train = labels_array[train_idx]
+    
+    X_val_video = [video_sequences[i] for i in val_idx]
+    X_val_audio = [audio_sequences[i] for i in val_idx]
+    y_val = labels_array[val_idx]
+    
+    X_test_video = [video_sequences[i] for i in test_idx]
+    X_test_audio = [audio_sequences[i] for i in test_idx]
+    y_test = labels_array[test_idx]
+    
+    return (X_train_video, X_train_audio, y_train, 
+            X_val_video, X_val_audio, y_val,
+            X_test_video, X_test_audio, y_test)
+
+def train_multimodal_model(
+    model,
+    X_train_video,
+    X_train_audio,
+    y_train,
+    X_val_video,
+    X_val_audio,
+    y_val,
+    epochs=100,
+    batch_size=32,
+    model_save_path='models/branched/'
+):
+    """Trains the branched LSTM model.
+
+    Args:
+        model: Compiled Keras model.
+        X_train_video, X_train_audio: Training features for video and audio.
+        y_train: Training labels.
+        X_val_video, X_val_audio: Validation features for video and audio.
+        y_val: Validation labels.
+        epochs: Number of training epochs.
+        batch_size: Batch size.
+        model_save_path: Directory to save model checkpoints
+
+    Returns:
+        Trained Keras model and training history.
+    """
+    # Create callbacks
+    early_stopping = EarlyStopping(
+        monitor='val_loss', 
+        patience=15, 
+        restore_best_weights=True,
+        verbose=1
+    )
+    
+    reduce_lr = ReduceLROnPlateau(
+        monitor='val_loss', 
+        factor=0.5,
+        patience=5, 
+        min_lr=1e-6, 
+        verbose=1
+    )
+    
+    model_checkpoint = ModelCheckpoint(
+        filepath=os.path.join(model_save_path, 'branched_model_epoch_{epoch:02d}_val_loss_{val_loss:.4f}.h5'),
+        monitor='val_loss',
+        save_best_only=True,
+        save_weights_only=False,
+        mode='min',
+        verbose=1
+    )
+    
+    # Create model directory if it doesn't exist
+    os.makedirs(model_save_path, exist_ok=True)
+
+    # Train the model
+    history = model.fit(
+        [X_train_video, X_train_audio],
+        y_train,
+        validation_data=([X_val_video, X_val_audio], y_val),
+        epochs=epochs,
+        batch_size=batch_size,
+        callbacks=[early_stopping, reduce_lr, model_checkpoint],
+        verbose=1
+    )
+
+    return model, history
+
+def evaluate_multimodal_model(model, X_test_video, X_test_audio, y_test, class_names=None, output_dir="model_evaluation/branched"):
+    """Evaluates the branched LSTM model on the test set with enhanced visualization.
+
+    Args:
+        model: Trained Keras model.
+        X_test_video, X_test_audio: Test features for video and audio.
+        y_test: Test labels.
+        class_names: Names of the emotion classes (optional).
+        output_dir: Directory to save evaluation results.
+    """
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Evaluate the model
+    loss, accuracy, precision, recall = model.evaluate(
+        [X_test_video, X_test_audio], y_test, verbose=1
+    )
+    f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+
+    # Print and save evaluation metrics
+    evaluation_text = (
+        f"Test Loss: {loss:.4f}\n"
+        f"Test Accuracy: {accuracy:.4f}\n"
+        f"Test Precision: {precision:.4f}\n"
+        f"Test Recall: {recall:.4f}\n"
+        f"Test F1-score: {f1_score:.4f}\n"
+    )
+    
+    print(evaluation_text)
+    
+    with open(os.path.join(output_dir, "evaluation_metrics.txt"), "w") as f:
+        f.write(evaluation_text)
+    
+    # Calculate and print confusion matrix
+    y_pred = model.predict([X_test_video, X_test_audio])
+    y_pred_classes = np.argmax(y_pred, axis=1)
+    y_true_classes = np.argmax(y_test, axis=1)
+    
+    from sklearn.metrics import confusion_matrix, classification_report
+    cm = confusion_matrix(y_true_classes, y_pred_classes)
+    print("Confusion Matrix:")
+    print(cm)
+    
+    # Try to save confusion matrix visualization if possible
+    try:
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        
+        plt.figure(figsize=(10, 8))
+        
+        # If class names are provided, use them
+        if class_names:
+            # Get the unique classes in the test set
+            unique_classes = sorted(set(y_true_classes) | set(y_pred_classes))
+            if len(unique_classes) < len(class_names):
+                # Filter class names to only include those present
+                present_class_names = [class_names[i] for i in unique_classes if i < len(class_names)]
+                sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                           xticklabels=present_class_names, yticklabels=present_class_names)
+            else:
+                sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                           xticklabels=class_names, yticklabels=class_names)
+        else:
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+            
+        plt.ylabel('True Label')
+        plt.xlabel('Predicted Label')
+        plt.title('Confusion Matrix')
+        plt.tight_layout()
+        
+        # Save the confusion matrix visualization
+        confusion_matrix_path = os.path.join(output_dir, "confusion_matrix.png")
+        plt.savefig(confusion_matrix_path)
+        plt.close()
+        logging.info(f"Saved confusion matrix visualization to {confusion_matrix_path}")
+    except Exception as e:
+        logging.warning(f"Could not create confusion matrix visualization: {str(e)}")
+    
+    # Generate classification report
+    try:
+        # Get the unique classes in the test set
+        unique_classes = sorted(set(y_true_classes) | set(y_pred_classes))
+        
+        if class_names and len(unique_classes) < len(class_names):
+            # Filter class names to only include those present in the data
+            present_class_names = [class_names[i] for i in unique_classes if i < len(class_names)]
+            
+            # Generate report with only the present classes
+            report = classification_report(
+                y_true_classes, y_pred_classes, 
+                labels=unique_classes,
+                target_names=present_class_names,
+                zero_division=0
+            )
+        elif class_names:
+            report = classification_report(
+                y_true_classes, y_pred_classes, 
+                target_names=class_names,
+                zero_division=0
+            )
+        else:
+            report = classification_report(
+                y_true_classes, y_pred_classes,
+                zero_division=0
+            )
+            
+        print("\nClassification Report:")
+        print(report)
+        
+        with open(os.path.join(output_dir, "classification_report.txt"), "w") as f:
+            f.write(report)
+    except Exception as e:
+        logging.warning(f"Could not generate classification report: {str(e)}")
+
+def main():
+    """Main function to train and evaluate the branched LSTM model."""
+    
+    # Parse command-line arguments
+    import argparse
+    parser = argparse.ArgumentParser(description='Train the branched LSTM model for emotion recognition')
+    parser.add_argument('--data_dir', type=str, default='processed_features',
+                        help='Directory containing processed features (default: processed_features)')
+    parser.add_argument('--dataset', type=str, default='RAVDESS',
+                        help='Dataset name: RAVDESS or CREMA-D (default: RAVDESS)')
+    parser.add_argument('--epochs', type=int, default=150,
+                        help='Number of training epochs (default: 150)')
+    parser.add_argument('--batch_size', type=int, default=32,
+                        help='Training batch size (default: 32)')
+    parser.add_argument('--model_dir', type=str, default='models/branched/',
+                        help='Directory to save model checkpoints (default: models/branched/)')
+    parser.add_argument('--eval_dir', type=str, default='model_evaluation/branched/',
+                        help='Directory to save evaluation results (default: model_evaluation/branched/)')
+    
+    args = parser.parse_args()
+    
+    # --- Configuration ---
+    DATA_DIR = args.data_dir
+    DATASET_NAME = args.dataset
+    NUM_CLASSES = 8  # Number of emotions in RAVDESS
+    EPOCHS = args.epochs
+    BATCH_SIZE = args.batch_size
+    MODEL_SAVE_PATH = args.model_dir  # Directory to save model checkpoints
+    EVALUATION_DIR = args.eval_dir  # Directory to save evaluation results
+    
+    # RAVDESS emotion classes
+    CLASS_NAMES = [
+        'neutral', 'calm', 'happy', 'sad', 
+        'angry', 'fearful', 'disgust', 'surprised'
+    ]
+    
+    # --- Data Loading ---
+    video_sequences, audio_sequences, labels, filenames = load_data(DATA_DIR, DATASET_NAME)
+    
+    if video_sequences is None or audio_sequences is None or len(video_sequences) == 0 or len(audio_sequences) == 0:
+        logging.error("Data loading failed or returned empty sequences.")
+        sys.exit(1)
+    
+    # Convert labels to categorical format (one-hot encoding)
+    labels_categorical = to_categorical(labels, num_classes=NUM_CLASSES)
+    
+    # --- Dataset Creation ---
+    dataset = create_multimodal_datasets(video_sequences, audio_sequences, labels_categorical, filenames)
+    
+    if dataset is None:
+        logging.error("Failed to create datasets.")
+        sys.exit(1)
+    
+    X_train_video, X_train_audio, y_train, X_val_video, X_val_audio, y_val, X_test_video, X_test_audio, y_test = dataset
+    
+    logging.info(f"Training set size: {len(X_train_video)}")
+    logging.info(f"Validation set size: {len(X_val_video)}")
+    logging.info(f"Test set size: {len(X_test_video)}")
+    
+    # --- Padding Video Sequences ---
+    # Find the maximum sequence length in video sequences
+    video_max_len = max(seq.shape[0] for seq in X_train_video)
+    video_dim = X_train_video[0].shape[1]
+    
+    logging.info(f"Video sequence max length: {video_max_len}, dimension: {video_dim}")
+    
+    # Pad all video sequences
+    X_train_video_padded = np.zeros((len(X_train_video), video_max_len, video_dim))
+    X_val_video_padded = np.zeros((len(X_val_video), video_max_len, video_dim))
+    X_test_video_padded = np.zeros((len(X_test_video), video_max_len, video_dim))
+    
+    for i, seq in enumerate(X_train_video):
+        X_train_video_padded[i, :seq.shape[0]] = seq
+    for i, seq in enumerate(X_val_video):
+        X_val_video_padded[i, :seq.shape[0]] = seq
+    for i, seq in enumerate(X_test_video):
+        X_test_video_padded[i, :seq.shape[0]] = seq
+    
+    # --- Padding Audio Sequences ---
+    # Find the maximum sequence length in audio sequences
+    audio_max_len = max(seq.shape[0] for seq in X_train_audio)
+    
+    # Check if all audio sequences have the same feature dimension
+    audio_dims = [seq.shape[1] for seq in X_train_audio + X_val_audio + X_test_audio]
+    if len(set(audio_dims)) == 1:
+        # All sequences have the same dimension
+        audio_dim = audio_dims[0]
+        logging.info(f"Audio sequence max length: {audio_max_len}, consistent dimension: {audio_dim}")
+        
+        # Pad all audio sequences
+        X_train_audio_padded = np.zeros((len(X_train_audio), audio_max_len, audio_dim))
+        X_val_audio_padded = np.zeros((len(X_val_audio), audio_max_len, audio_dim))
+        X_test_audio_padded = np.zeros((len(X_test_audio), audio_max_len, audio_dim))
+        
+        for i, seq in enumerate(X_train_audio):
+            X_train_audio_padded[i, :seq.shape[0]] = seq
+        for i, seq in enumerate(X_val_audio):
+            X_val_audio_padded[i, :seq.shape[0]] = seq
+        for i, seq in enumerate(X_test_audio):
+            X_test_audio_padded[i, :seq.shape[0]] = seq
+    else:
+        # Variable dimensions - we'll need to standardize
+        logging.info(f"Audio sequences have variable dimensions: {set(audio_dims)}")
+        
+        # Use the most common dimension
+        from collections import Counter
+        most_common_dim = Counter(audio_dims).most_common(1)[0][0]
+        logging.info(f"Using most common dimension: {most_common_dim}")
+        
+        # Initialize padded arrays with zeros
+        X_train_audio_padded = np.zeros((len(X_train_audio), audio_max_len, most_common_dim))
+        X_val_audio_padded = np.zeros((len(X_val_audio), audio_max_len, most_common_dim))
+        X_test_audio_padded = np.zeros((len(X_test_audio), audio_max_len, most_common_dim))
+        
+        # Copy and potentially reshape data
+        for i, seq in enumerate(X_train_audio):
+            if seq.shape[1] == most_common_dim:
+                X_train_audio_padded[i, :seq.shape[0]] = seq
+            else:
+                logging.warning(f"Training sequence {i} has dimension {seq.shape[1]}, truncating/padding to {most_common_dim}")
+                for j in range(min(seq.shape[0], audio_max_len)):
+                    X_train_audio_padded[i, j, :min(seq.shape[1], most_common_dim)] = seq[j, :min(seq.shape[1], most_common_dim)]
+        
+        for i, seq in enumerate(X_val_audio):
+            if seq.shape[1] == most_common_dim:
+                X_val_audio_padded[i, :seq.shape[0]] = seq
+            else:
+                logging.warning(f"Validation sequence {i} has dimension {seq.shape[1]}, truncating/padding to {most_common_dim}")
+                for j in range(min(seq.shape[0], audio_max_len)):
+                    X_val_audio_padded[i, j, :min(seq.shape[1], most_common_dim)] = seq[j, :min(seq.shape[1], most_common_dim)]
+        
+        for i, seq in enumerate(X_test_audio):
+            if seq.shape[1] == most_common_dim:
+                X_test_audio_padded[i, :seq.shape[0]] = seq
+            else:
+                logging.warning(f"Test sequence {i} has dimension {seq.shape[1]}, truncating/padding to {most_common_dim}")
+                for j in range(min(seq.shape[0], audio_max_len)):
+                    X_test_audio_padded[i, j, :min(seq.shape[1], most_common_dim)] = seq[j, :min(seq.shape[1], most_common_dim)]
+    
+    # Update audio_dim for the model
+    audio_dim = X_train_audio_padded.shape[2]
+    logging.info(f"Final audio feature dimension: {audio_dim}")
+    
+    # --- Model Definition ---
+    video_input_shape = (video_max_len, video_dim)
+    audio_input_shape = (audio_max_len, audio_dim)
+    
+    try:
+        model = define_branched_model(video_input_shape, audio_input_shape, NUM_CLASSES)
+        
+        # --- Model Compilation ---
+        compile_model(model, learning_rate=0.001)
+        model.summary()
+        
+        # Create directories
+        os.makedirs(MODEL_SAVE_PATH, exist_ok=True)
+        os.makedirs(EVALUATION_DIR, exist_ok=True)
+        
+        # Visualize model architecture if possible
+        try:
+            from tensorflow.keras.utils import plot_model
+            plot_model(model, to_file=os.path.join(EVALUATION_DIR, 'model_architecture.png'), 
+                      show_shapes=True, show_layer_names=True)
+            logging.info(f"Model architecture visualization saved to {EVALUATION_DIR}/model_architecture.png")
+        except Exception as e:
+            logging.warning(f"Could not visualize model architecture: {str(e)}")
+            logging.warning("Continuing without visualization. To enable, install pydot and graphviz.")
+    except Exception as e:
+        logging.error(f"Error creating model: {str(e)}")
+        import traceback
+        logging.error(traceback.format_exc())
+        sys.exit(1)
+    
+    # --- Training ---
+    try:
+        model, history = train_multimodal_model(
+            model, 
+            X_train_video_padded, X_train_audio_padded, y_train,
+            X_val_video_padded, X_val_audio_padded, y_val,
+            epochs=EPOCHS,
+            batch_size=BATCH_SIZE,
+            model_save_path=MODEL_SAVE_PATH
+        )
+        
+        # Plot training history if possible
+        try:
+            import matplotlib.pyplot as plt
+            
+            # Plot accuracy
+            plt.figure(figsize=(12, 4))
+            plt.subplot(1, 2, 1)
+            plt.plot(history.history['accuracy'])
+            plt.plot(history.history['val_accuracy'])
+            plt.title('Model Accuracy')
+            plt.ylabel('Accuracy')
+            plt.xlabel('Epoch')
+            plt.legend(['Train', 'Validation'], loc='lower right')
+            
+            # Plot loss
+            plt.subplot(1, 2, 2)
+            plt.plot(history.history['loss'])
+            plt.plot(history.history['val_loss'])
+            plt.title('Model Loss')
+            plt.ylabel('Loss')
+            plt.xlabel('Epoch')
+            plt.legend(['Train', 'Validation'], loc='upper right')
+            
+            plt.tight_layout()
+            history_path = os.path.join(EVALUATION_DIR, 'training_history.png')
+            plt.savefig(history_path)
+            plt.close()
+            logging.info(f"Training history plot saved to {history_path}")
+        except Exception as e:
+            logging.warning(f"Could not create training history plot: {str(e)}")
+    except Exception as e:
+        logging.error(f"Error training model: {str(e)}")
+        import traceback
+        logging.error(traceback.format_exc())
+        sys.exit(1)
+    
+    # --- Evaluation ---
+    try:
+        evaluate_multimodal_model(
+            model, 
+            X_test_video_padded, X_test_audio_padded, y_test,
+            class_names=CLASS_NAMES,
+            output_dir=EVALUATION_DIR
+        )
+        
+        # Save the trained model
+        final_model_path = os.path.join(MODEL_SAVE_PATH, 'final_branched_model.h5')
+        model.save(final_model_path)
+        logging.info(f"Final model saved to '{final_model_path}'")
+    except Exception as e:
+        logging.error(f"Error evaluating model: {str(e)}")
+        import traceback
+        logging.error(traceback.format_exc())
+
+if __name__ == "__main__":
+    main()
+
+
+================================================================================
+
+FILE: scripts/analyze_dataset.py
+================================
+
+#!/usr/bin/env python3
+"""
+Analyze the processed RAVDESS dataset to get statistics about emotions, actors, and sequence counts.
+"""
+
+import os
+import glob
+import numpy as np
+import matplotlib.pyplot as plt
+from collections import Counter
+import argparse
+
+def analyze_dataset(data_dir):
+    """Analyzes the npz files in data_dir and prints statistics."""
+    file_pattern = os.path.join(data_dir, "*.npz")
+    files = glob.glob(file_pattern)
+    
+    if not files:
+        print(f"No .npz files found in {data_dir}")
+        return
+    
+    print(f"Found {len(files)} .npz files in {data_dir}")
+    
+    total_sequences = 0
+    emotion_labels = []
+    actor_ids = []
+    sequence_counts = []
+    file_sizes = []
+    
+    # RAVDESS filename format: 01-01-06-01-02-01-16.npz
+    # [actor]-[modality]-[emotion]-[intensity]-[statement]-[repetition]-[take]
+    
+    # Analyze files
+    for file_path in files:
+        # Get actor and emotion from filename
+        basename = os.path.basename(file_path)
+        parts = basename.split('-')
+        
+        if len(parts) >= 3:
+            actor_id = parts[0]
+            emotion_code = parts[2]
+            
+            actor_ids.append(actor_id)
+            emotion_labels.append(emotion_code)
+        
+        # Get file size
+        file_size = os.path.getsize(file_path) / 1024  # Size in KB
+        file_sizes.append(file_size)
+        
+        try:
+            # Load the npz file
+            data = np.load(file_path, allow_pickle=True)
+            
+            # Count sequences
+            if 'video_sequences' in data:
+                video_seqs = data['video_sequences']
+                num_sequences = len(video_seqs)
+                sequence_counts.append(num_sequences)
+                total_sequences += num_sequences
+                
+                # Print the shape of the first sequence
+                if num_sequences > 0:
+                    first_video_seq = video_seqs[0]
+                    first_audio_seq = data['audio_sequences'][0] if 'audio_sequences' in data else None
+                    
+                    print(f"File: {basename}")
+                    print(f"  Video sequence shape: {first_video_seq.shape}")
+                    print(f"  Audio sequence shape: {first_audio_seq.shape if first_audio_seq is not None else 'N/A'}")
+                    print(f"  Emotion label: {data['emotion_label'] if 'emotion_label' in data else 'N/A'}")
+                    print(f"  Number of sequences: {num_sequences}")
+                    print("")
+        except Exception as e:
+            print(f"Error loading {file_path}: {str(e)}")
+    
+    # Print statistics
+    print("\n=== DATASET STATISTICS ===")
+    print(f"Total files: {len(files)}")
+    print(f"Total sequences: {total_sequences}")
+    print(f"Average sequences per file: {total_sequences/len(files) if files else 0:.2f}")
+    
+    # Emotion distribution
+    emotion_counter = Counter(emotion_labels)
+    print("\nEmotion Distribution:")
+    for emotion, count in sorted(emotion_counter.items()):
+        emotion_name = get_emotion_name(emotion)
+        print(f"  {emotion} ({emotion_name}): {count} files")
+    
+    # Actor distribution
+    actor_counter = Counter(actor_ids)
+    print("\nActor Distribution:")
+    for actor, count in sorted(actor_counter.items()):
+        print(f"  Actor {actor}: {count} files")
+    
+    # Sequence count distribution
+    if sequence_counts:
+        print("\nSequence Count Distribution:")
+        seq_counter = Counter(sequence_counts)
+        for count, frequency in sorted(seq_counter.items()):
+            print(f"  {count} sequences: {frequency} files")
+    
+    # Plot distributions if matplotlib is available
+    try:
+        # Plot emotion distribution
+        plt.figure(figsize=(12, 6))
+        emotions = [f"{e} ({get_emotion_name(e)})" for e in sorted(emotion_counter.keys())]
+        counts = [emotion_counter[e] for e in sorted(emotion_counter.keys())]
+        
+        plt.subplot(1, 2, 1)
+        plt.bar(emotions, counts)
+        plt.title('Emotion Distribution')
+        plt.xticks(rotation=45, ha='right')
+        plt.ylabel('Number of Files')
+        
+        # Plot sequence count distribution
+        plt.subplot(1, 2, 2)
+        seq_counts = sorted(seq_counter.keys())
+        seq_freqs = [seq_counter[c] for c in seq_counts]
+        
+        plt.bar([str(c) for c in seq_counts], seq_freqs)
+        plt.title('Sequences per File')
+        plt.xlabel('Number of Sequences')
+        plt.ylabel('Number of Files')
+        
+        plt.tight_layout()
+        
+        # Save the figure
+        output_file = os.path.join(data_dir, 'dataset_statistics.png')
+        plt.savefig(output_file)
+        print(f"\nStatistics visualization saved to {output_file}")
+        
+        plt.close()
+    except Exception as e:
+        print(f"Could not create visualizations: {str(e)}")
+
+def get_emotion_name(emotion_code):
+    """Maps RAVDESS emotion codes to names."""
+    emotion_map = {
+        "01": "neutral",
+        "02": "calm",
+        "03": "happy",
+        "04": "sad",
+        "05": "angry",
+        "06": "fearful",
+        "07": "disgust",
+        "08": "surprised"
+    }
+    return emotion_map.get(emotion_code, "unknown")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Analyze processed RAVDESS dataset')
+    parser.add_argument('--data_dir', type=str, default='processed_features_large',
+                        help='Directory containing processed features')
+    
+    args = parser.parse_args()
+    analyze_dataset(args.data_dir)
+
+
+================================================================================
+
+FILE: scripts/train_dual_stream.py
+==================================
+
+#!/usr/bin/env python3
+"""
+Training script for the dual-stream LSTM model for multimodal emotion recognition.
+This implements the exact architecture specified in the design document:
+- Separate LSTM branches for video and audio
+- Early fusion through concatenation
+- MLP layers post-fusion
+- Output layer for emotion classification
+"""
+
+import os
+import sys
+import glob
+import logging
+import numpy as np
+import tensorflow as tf
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, LSTM, Dense, Dropout, concatenate
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+from tensorflow.keras.utils import to_categorical
+from synchronize_test import parse_ravdess_filename
+from visualize_model import plot_training_history, visualize_model_architecture, visualize_confusion_matrix
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("train_dual_stream.log"),
+        logging.StreamHandler()
+    ]
+)
+
+def load_data(data_dir, dataset_name):
+    """Loads preprocessed data and labels from a directory.
+
+    Args:
+        data_dir: Directory containing the preprocessed .npz files.
+        dataset_name: name of the dataset ('RAVDESS' or 'CREMA-D')
+
+    Returns:
+        Tuple: (video_sequences, audio_sequences, labels, filenames)
+               - video_sequences is a list of video feature sequences
+               - audio_sequences is a list of audio feature sequences
+               - labels is a list of corresponding emotion labels (numeric)
+               - filenames is a list of the base filenames
+    """
+    video_sequences = []
+    audio_sequences = []
+    labels = []
+    filenames = []
+    
+    file_pattern = os.path.join(data_dir, "*.npz")
+    files = glob.glob(file_pattern)
+
+    if not files:
+        logging.error(f"No .npz files found in {data_dir}")
+        return None, None, None, None
+
+    for file_path in files:
+        try:
+            data = np.load(file_path, allow_pickle=True)
+            
+            # Check for new format with separate video and audio sequences
+            if 'video_sequences' in data and 'audio_sequences' in data:
+                # Get video sequences
+                video_seqs = data['video_sequences']
+                # Get audio sequences
+                audio_seqs = data['audio_sequences']
+                
+                # Get the base filename without extension
+                base_filename = os.path.splitext(os.path.basename(file_path))[0]
+                
+                # Get emotion label
+                if 'emotion_label' in data:
+                    emotion_labels = data['emotion_label']
+                    
+                    # Handle scalar emotion label (single integer)
+                    if np.isscalar(emotion_labels) or (isinstance(emotion_labels, np.ndarray) and emotion_labels.size == 1):
+                        # Convert scalar to array with the value repeated for each sequence
+                        emotion_label_value = emotion_labels.item() if isinstance(emotion_labels, np.ndarray) else emotion_labels
+                        emotion_labels = np.array([emotion_label_value] * len(video_seqs))
+                    elif not isinstance(emotion_labels, np.ndarray):
+                        # Convert other types to numpy array
+                        emotion_labels = np.array([emotion_labels])
+                else:
+                    # Try to parse from filename if not in the file
+                    emotion_info = None
+                    if dataset_name == 'RAVDESS':
+                        emotion_info = parse_ravdess_filename(file_path)
+                    
+                    if emotion_info:
+                        emotion_labels = np.array([emotion_info['numeric']] * len(video_seqs))
+                    else:
+                        logging.warning(f"Could not find emotion label for {file_path}, skipping.")
+                        continue
+                
+                # Add data to our collections
+                for i in range(len(video_seqs)):
+                    video_sequences.append(video_seqs[i])
+                    
+                    # Handle audio sequences
+                    # For audio, we need to ensure each sequence has the same length
+                    # This is for demo - in practice, you might use more sophisticated
+                    # sequence alignment techniques
+                    audio_sequences.append(audio_seqs[i])
+                    
+                    # Add label and filename for each sequence
+                    if len(emotion_labels) == 1:
+                        # If there's only one label for all sequences
+                        labels.append(emotion_labels[0])
+                    else:
+                        # If there's a label per sequence
+                        labels.append(emotion_labels[i])
+                    
+                    filenames.append(base_filename)
+            
+            else:
+                logging.warning(f"{file_path} does not contain 'video_sequences' and 'audio_sequences'. Trying legacy format...")
+                
+                # Try legacy format (fallback for older files)
+                if 'sequences' in data and 'sequence_lengths' in data:
+                    logging.warning(f"Found legacy format in {file_path}. This won't work with the dual-stream model.")
+                else:
+                    logging.error(f"Unrecognized data format in {file_path}, skipping.")
+                continue
+
+        except Exception as e:
+            logging.error(f"Error loading data from {file_path}: {str(e)}")
+            import traceback
+            logging.error(traceback.format_exc())
+            continue
+
+    logging.info(f"Loaded {len(video_sequences)} video sequences and {len(audio_sequences)} audio sequences")
+    
+    return video_sequences, audio_sequences, labels, filenames
+
+def define_dual_stream_model(video_input_shape, audio_input_shape, num_classes):
+    """Defines the dual-stream LSTM model architecture.
+
+    Args:
+        video_input_shape: Shape of the video input data (sequence_length, feature_dim).
+        audio_input_shape: Shape of the audio input data (sequence_length, feature_dim).
+        num_classes: Number of emotion classes.
+
+    Returns:
+        Compiled Keras model.
+    """
+    # Define inputs for both streams
+    video_input = Input(shape=video_input_shape, name='video_input')
+    audio_input = Input(shape=audio_input_shape, name='audio_input')
+    
+    # --- Video Stream ---
+    # Using a stacked LSTM architecture for video
+    video_lstm1 = LSTM(128, return_sequences=True, name='video_lstm1')(video_input)
+    video_lstm1 = Dropout(0.3, name='video_dropout1')(video_lstm1)
+    video_lstm2 = LSTM(64, return_sequences=False, name='video_lstm2')(video_lstm1)
+    video_lstm2 = Dropout(0.3, name='video_dropout2')(video_lstm2)
+    
+    # --- Audio Stream ---
+    # Using a stacked LSTM architecture for audio
+    audio_lstm1 = LSTM(128, return_sequences=True, name='audio_lstm1')(audio_input)
+    audio_lstm1 = Dropout(0.3, name='audio_dropout1')(audio_lstm1)
+    audio_lstm2 = LSTM(64, return_sequences=False, name='audio_lstm2')(audio_lstm1)
+    audio_lstm2 = Dropout(0.3, name='audio_dropout2')(audio_lstm2)
+    
+    # --- Early Fusion (Concatenation) ---
+    fusion = concatenate([video_lstm2, audio_lstm2], name='fusion')
+    
+    # --- MLP Post-Fusion ---
+    dense1 = Dense(128, activation='relu', name='dense1')(fusion)
+    dropout1 = Dropout(0.5, name='dropout_dense1')(dense1)
+    dense2 = Dense(64, activation='relu', name='dense2')(dropout1)
+    dropout2 = Dropout(0.3, name='dropout_dense2')(dense2)
+    
+    # --- Output Layer ---
+    # For multi-class emotion classification, use softmax activation
+    output_layer = Dense(num_classes, activation='softmax', name='output')(dropout2)
+    
+    # Create the model
+    model = Model(inputs=[video_input, audio_input], outputs=output_layer)
+    
+    return model
+
+def compile_model(model, learning_rate=0.001):
+    """Compiles the Keras model.
+
+    Args:
+        model: Keras model to compile.
+        learning_rate: Learning rate for the optimizer.
+    """
+    optimizer = Adam(learning_rate=learning_rate)
+    model.compile(
+        optimizer=optimizer,
+        loss='categorical_crossentropy',
+        metrics=[
+            'accuracy',
+            tf.keras.metrics.Precision(name='precision'),
+            tf.keras.metrics.Recall(name='recall')
+        ]
+    )
+
+def create_multimodal_datasets(video_sequences, audio_sequences, labels, filenames, test_size=0.2, val_size=0.1, random_state=42):
+    """Creates training, validation, and test datasets for multimodal data with video-level separation.
+
+    Args:
+        video_sequences: List of video feature sequences.
+        audio_sequences: List of audio feature sequences.
+        labels: List of corresponding labels.
+        filenames: List of source video filenames for each segment.
+        test_size: Proportion of data for testing.
+        val_size: Proportion of data for validation.
+        random_state: Random seed for reproducibility.
+
+    Returns:
+        Tuple containing training, validation, and test data and labels.
+    """
+    if len(video_sequences) == 0 or len(audio_sequences) == 0:
+        logging.error("Empty video or audio sequences provided.")
+        return None
+    
+    if len(video_sequences) != len(audio_sequences) or len(video_sequences) != len(labels) or len(video_sequences) != len(filenames):
+        logging.error(f"Mismatched data lengths: {len(video_sequences)} video, {len(audio_sequences)} audio, "
+                     f"{len(labels)} labels, {len(filenames)} filenames")
+        return None
+
+    # Convert labels to numpy array
+    labels_array = np.array(labels)
+    
+    # Group segments by source video
+    unique_videos = {}  # Dictionary: video_name -> list of indices
+    for i, fname in enumerate(filenames):
+        if fname not in unique_videos:
+            unique_videos[fname] = []
+        unique_videos[fname].append(i)
+    
+    logging.info(f"Data contains segments from {len(unique_videos)} unique videos")
+    
+    # Special handling for very small datasets
+    if len(unique_videos) < 3:
+        logging.warning(f"Not enough unique videos ({len(unique_videos)}) for proper train/val/test split.")
+        logging.warning("Using all data for all splits to continue with testing.")
+        
+        # Use all data for all splits
+        all_indices = list(range(len(video_sequences)))
+        return (
+            [video_sequences[i] for i in all_indices],
+            [audio_sequences[i] for i in all_indices],
+            labels_array[all_indices],
+            [video_sequences[i] for i in all_indices],
+            [audio_sequences[i] for i in all_indices],
+            labels_array[all_indices],
+            [video_sequences[i] for i in all_indices],
+            [audio_sequences[i] for i in all_indices],
+            labels_array[all_indices]
+        )
+    
+    # Get list of unique video names
+    video_names = list(unique_videos.keys())
+    
+    # Random state for reproducibility
+    np.random.seed(random_state)
+    np.random.shuffle(video_names)
+    
+    # Calculate split points
+    n_videos = len(video_names)
+    n_test = max(1, int(n_videos * test_size))
+    n_val = max(1, int(n_videos * val_size))
+    n_train = n_videos - n_test - n_val
+    
+    # Split at the video level
+    train_videos = video_names[:n_train]
+    val_videos = video_names[n_train:n_train+n_val]
+    test_videos = video_names[n_train+n_val:]
+    
+    logging.info(f"Video-level split: {len(train_videos)} train, {len(val_videos)} val, {len(test_videos)} test")
+    
+    # Collect indices for each split from the grouped videos
+    train_idx = []
+    for v in train_videos:
+        train_idx.extend(unique_videos[v])
+    
+    val_idx = []
+    for v in val_videos:
+        val_idx.extend(unique_videos[v])
+    
+    test_idx = []
+    for v in test_videos:
+        test_idx.extend(unique_videos[v])
+    
+    logging.info(f"Segment counts: {len(train_idx)} train, {len(val_idx)} val, {len(test_idx)} test")
+    
+    # Verify no overlap between sets
+    train_set = set(train_idx)
+    val_set = set(val_idx)
+    test_set = set(test_idx)
+    
+    if len(train_set.intersection(val_set)) > 0 or len(train_set.intersection(test_set)) > 0 or len(val_set.intersection(test_set)) > 0:
+        logging.error("Data leakage detected! Segments appear in multiple splits.")
+    else:
+        logging.info("No data leakage detected. Train/val/test splits are properly separated.")
+        
+    # Report distribution of emotion labels in each split
+    if len(set(labels)) <= 10:  # Only for small number of classes
+        train_labels = [labels[i] for i in train_idx]
+        val_labels = [labels[i] for i in val_idx]
+        test_labels = [labels[i] for i in test_idx]
+        
+        for split_name, split_labels in [("Train", train_labels), ("Val", val_labels), ("Test", test_labels)]:
+            label_counts = {}
+            for lbl in split_labels:
+                if lbl not in label_counts:
+                    label_counts[lbl] = 0
+                label_counts[lbl] += 1
+            logging.info(f"{split_name} label distribution: {label_counts}")
+    
+    # Training data - keep as lists to handle variable lengths
+    X_train_video = [video_sequences[i] for i in train_idx]
+    X_train_audio = [audio_sequences[i] for i in train_idx]
+    y_train = labels_array[train_idx]
+    
+    # Validation data
+    X_val_video = [video_sequences[i] for i in val_idx]
+    X_val_audio = [audio_sequences[i] for i in val_idx]
+    y_val = labels_array[val_idx]
+    
+    # Test data
+    X_test_video = [video_sequences[i] for i in test_idx]
+    X_test_audio = [audio_sequences[i] for i in test_idx]
+    y_test = labels_array[test_idx]
+    
+    return (X_train_video, X_train_audio, y_train, 
+            X_val_video, X_val_audio, y_val,
+            X_test_video, X_test_audio, y_test)
+
+def train_model(
+    model,
+    X_train_video,
+    X_train_audio,
+    y_train,
+    X_val_video,
+    X_val_audio,
+    y_val,
+    epochs=100,
+    batch_size=32,
+    model_save_path='models/dual_stream/'
+):
+    """Trains the dual-stream LSTM model.
+
+    Args:
+        model: Compiled Keras model.
+        X_train_video, X_train_audio: Training features for video and audio.
+        y_train: Training labels.
+        X_val_video, X_val_audio: Validation features for video and audio.
+        y_val: Validation labels.
+        epochs: Number of training epochs.
+        batch_size: Batch size.
+        model_save_path: Directory to save model checkpoints
+
+    Returns:
+        Trained Keras model and training history.
+    """
+    # Create model directory if it doesn't exist
+    os.makedirs(model_save_path, exist_ok=True)
+    
+    # Create callbacks
+    early_stopping = EarlyStopping(
+        monitor='val_loss', 
+        patience=15, 
+        restore_best_weights=True,
+        verbose=1
+    )
+    
+    reduce_lr = ReduceLROnPlateau(
+        monitor='val_loss', 
+        factor=0.5,
+        patience=5, 
+        min_lr=1e-6, 
+        verbose=1
+    )
+    
+    model_checkpoint = ModelCheckpoint(
+        filepath=os.path.join(model_save_path, 'model_epoch_{epoch:02d}_val_loss_{val_loss:.4f}.h5'),
+        monitor='val_loss',
+        save_best_only=True,
+        save_weights_only=False,
+        mode='min',
+        verbose=1
+    )
+
+    # Train the model
+    history = model.fit(
+        [X_train_video, X_train_audio],
+        y_train,
+        validation_data=([X_val_video, X_val_audio], y_val),
+        epochs=epochs,
+        batch_size=batch_size,
+        callbacks=[early_stopping, reduce_lr, model_checkpoint],
+        verbose=1
+    )
+
+    return model, history
+
+def evaluate_model(model, X_test_video, X_test_audio, y_test, class_names, output_dir="model_evaluation"):
+    """Evaluates the dual-stream LSTM model on the test set.
+
+    Args:
+        model: Trained Keras model.
+        X_test_video, X_test_audio: Test features for video and audio.
+        y_test: Test labels.
+        class_names: Names of the emotion classes.
+        output_dir: Directory to save evaluation results.
+    """
+    # Create output directory if it doesn't exist
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Evaluate the model
+    loss, accuracy, precision, recall = model.evaluate(
+        [X_test_video, X_test_audio], y_test, verbose=1
+    )
+    f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+
+    # Print and save evaluation metrics
+    evaluation_text = (
+        f"Test Loss: {loss:.4f}\n"
+        f"Test Accuracy: {accuracy:.4f}\n"
+        f"Test Precision: {precision:.4f}\n"
+        f"Test Recall: {recall:.4f}\n"
+        f"Test F1-score: {f1_score:.4f}\n"
+    )
+    
+    print(evaluation_text)
+    
+    with open(os.path.join(output_dir, "evaluation_metrics.txt"), "w") as f:
+        f.write(evaluation_text)
+    
+    # Calculate and print confusion matrix
+    y_pred = model.predict([X_test_video, X_test_audio])
+    y_pred_classes = np.argmax(y_pred, axis=1)
+    y_true_classes = np.argmax(y_test, axis=1)
+    
+    from sklearn.metrics import confusion_matrix, classification_report
+    cm = confusion_matrix(y_true_classes, y_pred_classes)
+    print("Confusion Matrix:")
+    print(cm)
+    
+    # Try to save confusion matrix visualization, but continue if it fails
+    try:
+        logging.info("Attempting to visualize confusion matrix...")
+        visualize_confusion_matrix(y_test, y_pred, class_names, 
+                                  output_file=os.path.join(output_dir, "confusion_matrix.png"))
+        logging.info("Confusion matrix visualization saved.")
+    except Exception as e:
+        logging.warning(f"Could not visualize confusion matrix: {str(e)}")
+        logging.warning("Continuing without confusion matrix visualization.")
+    
+    # Print and save classification report
+    try:
+        # Get the unique classes in the test set
+        unique_classes = sorted(set(y_true_classes) | set(y_pred_classes))
+        if len(unique_classes) < len(class_names):
+            logging.warning(f"Only {len(unique_classes)} out of {len(class_names)} classes present in test set")
+            
+            # Filter class names to only include those present in the data
+            present_class_names = [class_names[i] for i in unique_classes if i < len(class_names)]
+            
+            # Generate report with only the present classes
+            report = classification_report(
+                y_true_classes, y_pred_classes, 
+                labels=unique_classes,
+                target_names=present_class_names,
+                zero_division=0
+            )
+        else:
+            report = classification_report(
+                y_true_classes, y_pred_classes, 
+                target_names=class_names,
+                zero_division=0
+            )
+            
+        print("\nClassification Report:")
+        print(report)
+        
+        with open(os.path.join(output_dir, "classification_report.txt"), "w") as f:
+            f.write(report)
+    except Exception as e:
+        logging.warning(f"Could not generate classification report: {str(e)}")
+
+def main():
+    """Main function to train and evaluate the dual-stream LSTM model."""
+    
+    # --- Configuration ---
+    DATA_DIR = 'processed_features'  # Directory containing processed features
+    DATASET_NAME = 'RAVDESS'  # Dataset name ('RAVDESS' or 'CREMA-D')
+    NUM_CLASSES = 8  # Number of emotion classes
+    EPOCHS = 2  # Number of training epochs (reduced for testing)
+    BATCH_SIZE = 2  # Batch size (reduced for testing)
+    MODEL_SAVE_PATH = 'models/dual_stream/'  # Directory to save model checkpoints
+    EVALUATION_DIR = 'model_evaluation/dual_stream/'  # Directory to save evaluation results
+    TEST_SIZE = 0.2  # Proportion of data for testing
+    VAL_SIZE = 0.1  # Proportion of data for validation
+    
+    # RAVDESS emotion classes
+    CLASS_NAMES = [
+        'neutral', 'calm', 'happy', 'sad', 
+        'angry', 'fearful', 'disgust', 'surprised'
+    ]
+    
+    # --- Data Loading ---
+    logging.info("Loading data...")
+    video_sequences, audio_sequences, labels, filenames = load_data(DATA_DIR, DATASET_NAME)
+    
+    if video_sequences is None or audio_sequences is None or len(video_sequences) == 0 or len(audio_sequences) == 0:
+        logging.error("Data loading failed or returned empty sequences.")
+        sys.exit(1)
+    
+    # Convert labels to categorical format (one-hot encoding)
+    labels_categorical = to_categorical(labels, num_classes=NUM_CLASSES)
+    
+    # --- Dataset Creation ---
+    logging.info("Creating datasets...")
+    dataset = create_multimodal_datasets(
+        video_sequences, audio_sequences, labels_categorical, filenames,
+        test_size=TEST_SIZE, val_size=VAL_SIZE
+    )
+    
+    if dataset is None:
+        logging.error("Failed to create datasets.")
+        sys.exit(1)
+    
+    X_train_video, X_train_audio, y_train, X_val_video, X_val_audio, y_val, X_test_video, X_test_audio, y_test = dataset
+    
+    logging.info(f"Training set size: {len(X_train_video)}")
+    logging.info(f"Validation set size: {len(X_val_video)}")
+    logging.info(f"Test set size: {len(X_test_video)}")
+    
+    # --- Padding Video Sequences ---
+    # Find the maximum sequence length in video sequences
+    video_max_len = max(seq.shape[0] for seq in X_train_video)
+    video_dim = X_train_video[0].shape[1]
+    
+    logging.info(f"Video sequence max length: {video_max_len}, dimension: {video_dim}")
+    
+    # Pad all video sequences
+    X_train_video_padded = np.zeros((len(X_train_video), video_max_len, video_dim))
+    X_val_video_padded = np.zeros((len(X_val_video), video_max_len, video_dim))
+    X_test_video_padded = np.zeros((len(X_test_video), video_max_len, video_dim))
+    
+    for i, seq in enumerate(X_train_video):
+        X_train_video_padded[i, :seq.shape[0]] = seq
+    for i, seq in enumerate(X_val_video):
+        X_val_video_padded[i, :seq.shape[0]] = seq
+    for i, seq in enumerate(X_test_video):
+        X_test_video_padded[i, :seq.shape[0]] = seq
+    
+    # --- Padding Audio Sequences ---
+    # Find the maximum sequence length in audio sequences
+    audio_max_len = max(seq.shape[0] for seq in X_train_audio)
+    
+    # Check if all audio sequences have the same feature dimension
+    audio_dims = [seq.shape[1] for seq in X_train_audio + X_val_audio + X_test_audio]
+    if len(set(audio_dims)) == 1:
+        # All sequences have the same dimension
+        audio_dim = audio_dims[0]
+        logging.info(f"Audio sequence max length: {audio_max_len}, consistent dimension: {audio_dim}")
+        
+        # Pad all audio sequences
+        X_train_audio_padded = np.zeros((len(X_train_audio), audio_max_len, audio_dim))
+        X_val_audio_padded = np.zeros((len(X_val_audio), audio_max_len, audio_dim))
+        X_test_audio_padded = np.zeros((len(X_test_audio), audio_max_len, audio_dim))
+        
+        for i, seq in enumerate(X_train_audio):
+            X_train_audio_padded[i, :seq.shape[0]] = seq
+        for i, seq in enumerate(X_val_audio):
+            X_val_audio_padded[i, :seq.shape[0]] = seq
+        for i, seq in enumerate(X_test_audio):
+            X_test_audio_padded[i, :seq.shape[0]] = seq
+    else:
+        # Variable dimensions - we'll need to standardize
+        logging.info(f"Audio sequences have variable dimensions: {set(audio_dims)}")
+        
+        # Use the most common dimension
+        from collections import Counter
+        most_common_dim = Counter(audio_dims).most_common(1)[0][0]
+        logging.info(f"Using most common dimension: {most_common_dim}")
+        
+        # Initialize padded arrays with zeros
+        X_train_audio_padded = np.zeros((len(X_train_audio), audio_max_len, most_common_dim))
+        X_val_audio_padded = np.zeros((len(X_val_audio), audio_max_len, most_common_dim))
+        X_test_audio_padded = np.zeros((len(X_test_audio), audio_max_len, most_common_dim))
+        
+        # Copy and potentially reshape data
+        for i, seq in enumerate(X_train_audio):
+            if seq.shape[1] == most_common_dim:
+                X_train_audio_padded[i, :seq.shape[0]] = seq
+            else:
+                logging.warning(f"Training sequence {i} has dimension {seq.shape[1]}, truncating/padding to {most_common_dim}")
+                for j in range(min(seq.shape[0], audio_max_len)):
+                    X_train_audio_padded[i, j, :min(seq.shape[1], most_common_dim)] = seq[j, :min(seq.shape[1], most_common_dim)]
+        
+        for i, seq in enumerate(X_val_audio):
+            if seq.shape[1] == most_common_dim:
+                X_val_audio_padded[i, :seq.shape[0]] = seq
+            else:
+                logging.warning(f"Validation sequence {i} has dimension {seq.shape[1]}, truncating/padding to {most_common_dim}")
+                for j in range(min(seq.shape[0], audio_max_len)):
+                    X_val_audio_padded[i, j, :min(seq.shape[1], most_common_dim)] = seq[j, :min(seq.shape[1], most_common_dim)]
+        
+        for i, seq in enumerate(X_test_audio):
+            if seq.shape[1] == most_common_dim:
+                X_test_audio_padded[i, :seq.shape[0]] = seq
+            else:
+                logging.warning(f"Test sequence {i} has dimension {seq.shape[1]}, truncating/padding to {most_common_dim}")
+                for j in range(min(seq.shape[0], audio_max_len)):
+                    X_test_audio_padded[i, j, :min(seq.shape[1], most_common_dim)] = seq[j, :min(seq.shape[1], most_common_dim)]
+    
+    # Update audio_dim for the model
+    audio_dim = X_train_audio_padded.shape[2]
+    logging.info(f"Final audio feature dimension: {audio_dim}")
+    
+    # --- Model Definition ---
+    logging.info("Defining the dual-stream LSTM model...")
+    video_input_shape = (video_max_len, video_dim)
+    audio_input_shape = (audio_max_len, audio_dim)
+    
+    model = define_dual_stream_model(video_input_shape, audio_input_shape, NUM_CLASSES)
+    
+    # --- Model Compilation ---
+    logging.info("Compiling the model...")
+    compile_model(model, learning_rate=0.001)
+    model.summary()
+    
+    # Create evaluation directory
+    os.makedirs(EVALUATION_DIR, exist_ok=True)
+    
+    # Try to visualize model architecture, but continue if it fails
+    try:
+        logging.info("Attempting to visualize model architecture...")
+        visualize_model_architecture(model, output_file=os.path.join(EVALUATION_DIR, "model_architecture.png"))
+        logging.info("Model architecture visualization saved.")
+    except ImportError as e:
+        logging.warning(f"Could not visualize model architecture: {str(e)}")
+        logging.warning("Continuing without visualization. To enable visualization, install pydot and graphviz.")
+    except Exception as e:
+        logging.warning(f"Could not visualize model architecture: {str(e)}")
+        logging.warning("Continuing without visualization.")
+    
+    # --- Training ---
+    logging.info("Training the model...")
+    model, history = train_model(
+        model, 
+        X_train_video_padded, X_train_audio_padded, y_train,
+        X_val_video_padded, X_val_audio_padded, y_val,
+        epochs=EPOCHS,
+        batch_size=BATCH_SIZE,
+        model_save_path=MODEL_SAVE_PATH
+    )
+    
+    # Try to plot training history, but continue if it fails
+    try:
+        logging.info("Attempting to plot training history...")
+        plot_training_history(history, output_file=os.path.join(EVALUATION_DIR, "training_history.png"))
+        logging.info("Training history plot saved.")
+    except Exception as e:
+        logging.warning(f"Could not plot training history: {str(e)}")
+        logging.warning("Continuing without training history visualization.")
+    
+    # --- Evaluation ---
+    logging.info("Evaluating the model...")
+    evaluate_model(
+        model, 
+        X_test_video_padded, X_test_audio_padded, y_test,
+        CLASS_NAMES,
+        output_dir=EVALUATION_DIR
+    )
+    
+    # Save the final model
+    final_model_path = os.path.join(MODEL_SAVE_PATH, 'final_model.h5')
+    model.save(final_model_path)
+    logging.info(f"Final model saved to: {final_model_path}")
+    
+    logging.info("Training and evaluation completed successfully!")
+
+if __name__ == "__main__":
+    main()
+
+
+================================================================================
+
+
+END OF DOCUMENTATION

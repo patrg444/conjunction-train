@@ -1,0 +1,10 @@
+class_weights: null
+dropout: 0.2
+grad_clip: 1.0
+learning_rate: 2.0e-05
+model_name: microsoft/deberta-v3-base
+num_classes: 2
+scheduler_type: cosine
+total_steps: 475
+warmup_steps: 47
+weight_decay: 0.01

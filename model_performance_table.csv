@@ -1,0 +1,11 @@
+Model,Best Val Accuracy,Best Epoch,Last Val Accuracy,Total Epochs,Trend
+branched_regularization,0.8481,64,0.8470,74,0.001100
+branched_sync_aug,0.8453,50,0.8453,50,0.001400
+branched_optimizer,0.8436,74,0.8386,84,0.000850
+branched_tcn,0.8436,48,0.8408,50,-0.001400
+branched_cross_attention,0.8414,48,0.8380,50,-0.001700
+no_leakage_verification,0.8414,45,0.8408,50,0.000000
+branched_regularization_sync_aug,0.8346,35,0.8285,45,-0.000250
+branched_self_attention,0.8335,37,0.8285,47,-0.001650
+branched_focal_loss,0.8217,48,0.8211,50,-0.000300
+branched_regularization_sync_aug_tcn_large_fixed_v2,0.7828,60,0.7713,63,0.013250

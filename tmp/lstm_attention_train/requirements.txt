@@ -1,0 +1,13 @@
+tensorflow
+deepface
+scikit-learn
+pandas
+numpy
+matplotlib
+moviepy
+opencv-python
+tqdm
+arff
+torch
+torchvision
+facenet-pytorch

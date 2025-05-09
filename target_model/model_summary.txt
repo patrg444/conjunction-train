@@ -1,0 +1,9 @@
+MODEL SUMMARY
+=============
+Target accuracy: 82.9%
+Source log file: /home/ec2-user/emotion_training/training_no_leakage_conda.log
+Found at epoch: 36
+Original path: /home/ec2-user/emotion_training/models/dynamic_padding_no_leakage/model_best.h5
+Local path: target_model/model_82.9_accuracy.h5
+File size:  34M bytes
+Download date: Thu Apr 17 15:56:18 PDT 2025

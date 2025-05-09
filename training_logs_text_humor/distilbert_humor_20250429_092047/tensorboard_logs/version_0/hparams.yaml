@@ -1,0 +1,5 @@
+learning_rate: 2.0e-05
+model_name: distilbert-base-uncased
+num_classes: 2
+total_steps: 0
+warmup_steps: 0

@@ -1,0 +1,483 @@
+/* EmotionTrack Marketing Analytics Platform Styles */
+
+:root {
+    --primary-color: #4285f4;
+    --secondary-color: #34a853;
+    --error-color: #ea4335;
+    --neutral-color: #fbbc05;
+    --text-color: #212121;
+    --text-secondary: #757575;
+    --background-color: #f5f5f5;
+    --panel-color: #ffffff;
+    --shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+    --border-radius: 8px;
+    --padding: 16px;
+    --header-height: 70px;
+}
+
+/* General Styles */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: 'Poppins', sans-serif;
+}
+
+body {
+    background-color: var(--background-color);
+    color: var(--text-color);
+    line-height: 1.6;
+}
+
+.app-container {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+/* Header Styles */
+header {
+    height: var(--header-height);
+    background-color: var(--panel-color);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 var(--padding);
+    box-shadow: var(--shadow);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+
+.logo h1 {
+    font-size: 1.8rem;
+    font-weight: 600;
+}
+
+.logo h1 span {
+    color: var(--primary-color);
+}
+
+.logo p {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    margin-top: -5px;
+}
+
+.header-controls {
+    display: flex;
+    gap: 12px;
+}
+
+/* Button Styles */
+.btn {
+    padding: 8px 16px;
+    border-radius: 4px;
+    font-weight: 500;
+    font-size: 0.9rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: all 0.2s ease;
+    border: 1px solid #ddd;
+    background-color: var(--panel-color);
+}
+
+.btn:hover {
+    background-color: #f9f9f9;
+}
+
+.btn-primary {
+    background-color: var(--primary-color);
+    color: white;
+    border: none;
+}
+
+.btn-primary:hover {
+    background-color: #3b78e7;
+}
+
+.btn-danger {
+    background-color: var(--error-color);
+    color: white;
+    border: none;
+}
+
+.btn-danger:hover {
+    background-color: #d23121;
+}
+
+.btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+/* Main Content */
+main {
+    flex-grow: 1;
+    padding: var(--padding);
+    padding-top: calc(var(--padding) / 2);
+}
+
+.dashboard-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    grid-auto-rows: minmax(300px, auto);
+    gap: var(--padding);
+}
+
+/* Panel Styling */
+.panel {
+    background-color: var(--panel-color);
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow);
+    padding: var(--padding);
+    overflow: hidden;
+}
+
+.panel h2 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin-bottom: 16px;
+    color: var(--text-color);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* Webcam Section */
+.webcam-container {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+}
+
+.webcam-wrapper {
+    position: relative;
+    width: 100%;
+    height: calc(100% - 50px);
+    overflow: hidden;
+    border-radius: 4px;
+    background-color: #000;
+}
+
+#webcam {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+#eyeTrackingOverlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+#gazeDot {
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    background-color: rgba(255, 0, 0, 0.7);
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+    z-index: 10;
+    display: none;
+}
+
+/* Emotion Analysis */
+.emotion-analysis {
+    grid-column: 2;
+    grid-row: 1;
+}
+
+.current-emotion {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.current-emotion span {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+#emotionLabel {
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: var(--primary-color);
+}
+
+.emotion-bars {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.emotion-bar-container {
+    display: flex;
+    align-items: center;
+}
+
+.emotion-label {
+    width: 80px;
+    font-size: 0.85rem;
+}
+
+.emotion-bar-outer {
+    flex-grow: 1;
+    height: 12px;
+    background-color: #eee;
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.emotion-bar-inner {
+    height: 100%;
+    border-radius: 6px;
+    transition: width 0.5s ease-out;
+}
+
+.emotion-value {
+    width: 45px;
+    text-align: right;
+    font-size: 0.8rem;
+    margin-left: 8px;
+}
+
+/* Engagement Metrics */
+.engagement-metrics {
+    grid-column: 3;
+    grid-row: 1;
+}
+
+.metric-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+}
+
+.metric-card {
+    background-color: #f9f9f9;
+    padding: 16px;
+    border-radius: var(--border-radius);
+    text-align: center;
+    transition: transform 0.2s;
+}
+
+.metric-card:hover {
+    transform: translateY(-2px);
+}
+
+.metric-icon {
+    font-size: 1.4rem;
+    color: var(--primary-color);
+    margin-bottom: 8px;
+}
+
+.metric-value {
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: var(--text-color);
+    margin-bottom: 4px;
+}
+
+.metric-label {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+/* Attention Heatmap */
+.attention-heatmap {
+    grid-column: 2 / span 2;
+    grid-row: 2;
+}
+
+.heatmap-container {
+    height: calc(100% - 50px);
+    display: flex;
+    flex-direction: column;
+}
+
+.heatmap-image-container {
+    position: relative;
+    flex-grow: 1;
+    width: 100%;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 12px;
+    background-color: #eee;
+}
+
+#marketingContent {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+}
+
+#heatmapOverlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+.heatmap-legend {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8rem;
+}
+
+.legend-item .color {
+    width: 16px;
+    height: 10px;
+    border-radius: 3px;
+}
+
+.legend-item .color.high {
+    background-color: rgba(255, 0, 0, 0.7);
+}
+
+.legend-item .color.medium {
+    background-color: rgba(255, 255, 0, 0.7);
+}
+
+.legend-item .color.low {
+    background-color: rgba(0, 255, 0, 0.7);
+}
+
+/* Time Series */
+.time-series {
+    grid-column: 1 / span 3;
+    grid-row: 3;
+}
+
+/* Calibration Modal */
+.modal {
+    display: none;
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    align-items: center;
+    justify-content: center;
+}
+
+.modal-content {
+    background-color: var(--panel-color);
+    width: 500px;
+    padding: 24px;
+    border-radius: var(--border-radius);
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+}
+
+.modal-content h2 {
+    margin-bottom: 16px;
+}
+
+.modal-content p {
+    margin-bottom: 24px;
+    color: var(--text-secondary);
+}
+
+#calibrationPoints {
+    position: relative;
+    width: 100%;
+    height: 300px;
+    background-color: #f5f5f5;
+    margin-bottom: 24px;
+    border-radius: 4px;
+}
+
+.calibration-controls {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+}
+
+/* Responsive Adjustments */
+@media (max-width: 1200px) {
+    .dashboard-grid {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .webcam-container {
+        grid-column: 1;
+        grid-row: 1;
+    }
+
+    .emotion-analysis {
+        grid-column: 2;
+        grid-row: 1;
+    }
+
+    .engagement-metrics {
+        grid-column: 1;
+        grid-row: 2;
+    }
+
+    .attention-heatmap {
+        grid-column: 2;
+        grid-row: 2;
+    }
+
+    .time-series {
+        grid-column: 1 / span 2;
+        grid-row: 3;
+    }
+}
+
+@media (max-width: 768px) {
+    .dashboard-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .webcam-container,
+    .emotion-analysis,
+    .engagement-metrics,
+    .attention-heatmap,
+    .time-series {
+        grid-column: 1;
+    }
+
+    .webcam-container {
+        grid-row: 1;
+    }
+
+    .emotion-analysis {
+        grid-row: 2;
+    }
+
+    .engagement-metrics {
+        grid-row: 3;
+    }
+
+    .attention-heatmap {
+        grid-row: 4;
+    }
+
+    .time-series {
+        grid-row: 5;
+    }
+
+    .header-controls {
+        flex-direction: column;
+        gap: 8px;
+    }
+}

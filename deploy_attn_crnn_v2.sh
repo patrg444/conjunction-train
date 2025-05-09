@@ -1,0 +1,70 @@
+#!/bin/bash
+set -e
+
+# Create required directories if they don't exist
+mkdir -p checkpoints/attn_crnn_v2
+mkdir -p analysis_results/attn_crnn_v2
+mkdir -p logs/attn_crnn_v2
+
+# Get the EC2 instance IP from the aws_instance_ip.txt file
+EC2_IP=$(cat aws_instance_ip.txt)
+SSH_KEY="$HOME/Downloads/gpu-key.pem"  # Adjust if your key path is different
+
+echo "=== DEPLOYING ATTN-CRNN V2 MODEL TO EC2 ==="
+echo "Target EC2: $EC2_IP"
+
+# Copy the training script to the server
+echo "Copying training script to server..."
+scp -i $SSH_KEY scripts/train_attn_crnn_v2.py ubuntu@$EC2_IP:~/emotion_recognition/scripts/
+
+# SSH into the server and set up the environment
+echo "Setting up training environment on EC2..."
+ssh -i $SSH_KEY ubuntu@$EC2_IP << EOF
+  cd ~/emotion_recognition
+  
+  # Create required directories
+  mkdir -p checkpoints/attn_crnn_v2
+  mkdir -p analysis_results/attn_crnn_v2
+  mkdir -p logs/attn_crnn_v2
+  
+  # Make the script executable
+  chmod +x scripts/train_attn_crnn_v2.py
+  
+  # Create the training launch script
+  cat > run_attn_crnn_v2.sh << 'EOFINNER'
+#!/bin/bash
+set -e
+
+# Source the environment
+source /opt/pytorch/bin/activate
+
+echo "Starting ATTN-CRNN V2 training with WAV2VEC features"
+
+# Create a new tmux session
+tmux new-session -d -s attn_crnn_v2 "python scripts/train_attn_crnn_v2.py \
+  --data_dirs /data/wav2vec_features /data/wav2vec_crema_d \
+  --epochs 30 \
+  --batch_size 32 \
+  --patience 6 \
+  --noise 0.005 \
+  --mixup 0.2 \
+  2>&1 | tee training_attn_crnn_v2.log"
+
+echo "Training started in tmux session 'attn_crnn_v2'"
+echo "To monitor: tmux attach -t attn_crnn_v2"
+EOFINNER
+
+  # Make the run script executable
+  chmod +x run_attn_crnn_v2.sh
+  
+  # Kill any existing tmux session with the same name
+  tmux kill-session -t attn_crnn_v2 2>/dev/null || true
+  
+  # Launch the training
+  echo "Launching training..."
+  ./run_attn_crnn_v2.sh
+EOF
+
+echo "=== ATTN-CRNN V2 MODEL DEPLOYMENT COMPLETE ==="
+echo "Training has been started on the EC2 instance in a tmux session."
+echo "To monitor training progress, use the monitor_attn_crnn_v2.sh script"

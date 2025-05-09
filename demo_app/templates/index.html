@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EmotionTrack | Marketing Analytics Platform</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header>
+            <div class="logo">
+                <h1><span>Emotion</span>Track</h1>
+                <p>Real-time Marketing Analytics</p>
+            </div>
+            <div class="header-controls">
+                <button id="calibrateBtn" class="btn"><i class="fas fa-crosshairs"></i> Calibrate Eye Tracking</button>
+                <button id="startBtn" class="btn btn-primary"><i class="fas fa-play"></i> Start Analysis</button>
+                <button id="stopBtn" class="btn btn-danger" disabled><i class="fas fa-stop"></i> Stop</button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main>
+            <div class="dashboard-grid">
+                <!-- Webcam Feed and Eye Tracking -->
+                <div class="webcam-container panel">
+                    <h2>Live Feed with Eye Tracking</h2>
+                    <div class="webcam-wrapper">
+                        <video id="webcam" autoplay playsinline muted></video>
+                        <canvas id="eyeTrackingOverlay"></canvas>
+                        <div id="gazeDot"></div>
+                    </div>
+                </div>
+
+                <!-- Emotion Analysis -->
+                <div class="emotion-analysis panel">
+                    <h2>Emotional Response</h2>
+                    <div class="current-emotion">
+                        <span>Current Emotion:</span>
+                        <div id="emotionLabel">Neutral</div>
+                    </div>
+                    <div class="emotion-bars" id="emotionBars">
+                        <!-- Emotion bars will be added dynamically -->
+                    </div>
+                </div>
+
+                <!-- Engagement Metrics -->
+                <div class="engagement-metrics panel">
+                    <h2>Engagement Metrics</h2>
+                    <div class="metric-grid">
+                        <div class="metric-card">
+                            <div class="metric-icon"><i class="fas fa-chart-line"></i></div>
+                            <div class="metric-value" id="engagementScore">0%</div>
+                            <div class="metric-label">Engagement Score</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-icon"><i class="fas fa-clock"></i></div>
+                            <div class="metric-value" id="attentionDuration">0.0s</div>
+                            <div class="metric-label">Attention Duration</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-icon"><i class="fas fa-heart"></i></div>
+                            <div class="metric-value" id="emotionalImpact">0%</div>
+                            <div class="metric-label">Emotional Impact</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Attention Heatmap -->
+                <div class="attention-heatmap panel">
+                    <h2>Attention Analysis</h2>
+                    <div class="heatmap-container">
+                        <div class="heatmap-image-container">
+                            <img id="marketingContent" src="{{ url_for('static', filename='marketing_image.jpg') }}" alt="Marketing Content">
+                            <canvas id="heatmapOverlay"></canvas>
+                        </div>
+                        <div class="heatmap-legend">
+                            <div class="legend-item">
+                                <span class="color high"></span>
+                                <span class="label">High Attention</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="color medium"></span>
+                                <span class="label">Medium Attention</span>
+                            </div>
+                            <div class="legend-item">
+                                <span class="color low"></span>
+                                <span class="label">Low Attention</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Time Series -->
+                <div class="time-series panel">
+                    <h2>Emotional Response Over Time</h2>
+                    <canvas id="emotionTimeChart"></canvas>
+                </div>
+            </div>
+        </main>
+
+        <!-- Calibration Modal -->
+        <div id="calibrationModal" class="modal">
+            <div class="modal-content">
+                <h2>Eye Tracking Calibration</h2>
+                <p>Please look at each dot as it appears and click on it. This helps calibrate the eye tracking system.</p>
+                <div id="calibrationPoints"></div>
+                <div class="calibration-controls">
+                    <button id="startCalibrationBtn" class="btn btn-primary">Start Calibration</button>
+                    <button id="finishCalibrationBtn" class="btn" disabled>Finish</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.0/dist/chart.min.js"></script>
+    <script src="{{ url_for('static', filename='webgazer.js') }}"></script>
+    <script src="{{ url_for('static', filename='heatmap.js') }}"></script>
+    <script src="{{ url_for('static', filename='main.js') }}"></script>
+</body>
+</html>

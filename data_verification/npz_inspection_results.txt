@@ -1,0 +1,91 @@
+
+Searching in directory: /home/ubuntu/wav2vec_sample/home/ubuntu/audio_emotion/models/wav2vec
+Found 96 feature files in /home/ubuntu/wav2vec_sample/home/ubuntu/audio_emotion/models/wav2vec
+
+===== NPZ File Structure Analysis =====
+
+Analyzing structure of 10 sample files:
+
+File 1: /home/ubuntu/wav2vec_sample/home/ubuntu/audio_emotion/models/wav2vec/cremad_1073_IEO_SAD_HI.npz
+  Keys: ['wav2vec_features', 'label', 'emotion', 'emotion_class']
+  wav2vec_features: numpy array, shape (130, 768), dtype float32
+  label: numpy array, shape (6,), dtype float64
+  emotion: numpy array, shape (), dtype <U3
+  emotion_class: numpy array, shape (), dtype int64
+
+File 2: /home/ubuntu/wav2vec_sample/home/ubuntu/audio_emotion/models/wav2vec/ravdess_01-01-04-01-02-02-15.npz
+  Keys: ['wav2vec_features', 'label', 'emotion', 'emotion_class']
+  wav2vec_features: numpy array, shape (168, 768), dtype float32
+  label: numpy array, shape (6,), dtype float64
+  emotion: numpy array, shape (), dtype <U3
+  emotion_class: numpy array, shape (), dtype int64
+
+File 3: /home/ubuntu/wav2vec_sample/home/ubuntu/audio_emotion/models/wav2vec/cremad_1020_IOM_FEA_XX.npz
+  Keys: ['wav2vec_features', 'label', 'emotion', 'emotion_class']
+  wav2vec_features: numpy array, shape (113, 768), dtype float32
+  label: numpy array, shape (6,), dtype float64
+  emotion: numpy array, shape (), dtype <U7
+  emotion_class: numpy array, shape (), dtype int64
+
+File 4: /home/ubuntu/wav2vec_sample/home/ubuntu/audio_emotion/models/wav2vec/cremad_1079_ITH_SAD_XX.npz
+  Keys: ['wav2vec_features', 'label', 'emotion', 'emotion_class']
+  wav2vec_features: numpy array, shape (135, 768), dtype float32
+  label: numpy array, shape (6,), dtype float64
+  emotion: numpy array, shape (), dtype <U3
+  emotion_class: numpy array, shape (), dtype int64
+
+File 5: /home/ubuntu/wav2vec_sample/home/ubuntu/audio_emotion/models/wav2vec/cremad_1017_WSI_ANG_XX.npz
+  Keys: ['wav2vec_features', 'label', 'emotion', 'emotion_class']
+  wav2vec_features: numpy array, shape (118, 768), dtype float32
+  label: numpy array, shape (6,), dtype float64
+  emotion: numpy array, shape (), dtype <U5
+  emotion_class: numpy array, shape (), dtype int64
+
+File 6: /home/ubuntu/wav2vec_sample/home/ubuntu/audio_emotion/models/wav2vec/ravdess_01-01-06-02-02-02-02.npz
+  Keys: ['wav2vec_features', 'label', 'emotion', 'emotion_class']
+  wav2vec_features: numpy array, shape (180, 768), dtype float32
+  label: numpy array, shape (6,), dtype float64
+  emotion: numpy array, shape (), dtype <U7
+  emotion_class: numpy array, shape (), dtype int64
+
+File 7: /home/ubuntu/wav2vec_sample/home/ubuntu/audio_emotion/models/wav2vec/cremad_1032_DFA_DIS_XX.npz
+  Keys: ['wav2vec_features', 'label', 'emotion', 'emotion_class']
+  wav2vec_features: numpy array, shape (135, 768), dtype float32
+  label: numpy array, shape (6,), dtype float64
+  emotion: numpy array, shape (), dtype <U7
+  emotion_class: numpy array, shape (), dtype int64
+
+File 8: /home/ubuntu/wav2vec_sample/home/ubuntu/audio_emotion/models/wav2vec/ravdess_01-01-05-02-02-02-24.npz
+  Keys: ['wav2vec_features', 'label', 'emotion', 'emotion_class']
+  wav2vec_features: numpy array, shape (255, 768), dtype float32
+  label: numpy array, shape (6,), dtype float64
+  emotion: numpy array, shape (), dtype <U5
+  emotion_class: numpy array, shape (), dtype int64
+
+File 9: /home/ubuntu/wav2vec_sample/home/ubuntu/audio_emotion/models/wav2vec/cremad_1037_IWL_HAP_XX.npz
+  Keys: ['wav2vec_features', 'label', 'emotion', 'emotion_class']
+  wav2vec_features: numpy array, shape (135, 768), dtype float32
+  label: numpy array, shape (6,), dtype float64
+  emotion: numpy array, shape (), dtype <U5
+  emotion_class: numpy array, shape (), dtype int64
+
+File 10: /home/ubuntu/wav2vec_sample/home/ubuntu/audio_emotion/models/wav2vec/ravdess_01-01-05-01-01-02-20.npz
+  Keys: ['wav2vec_features', 'label', 'emotion', 'emotion_class']
+  wav2vec_features: numpy array, shape (187, 768), dtype float32
+  label: numpy array, shape (6,), dtype float64
+  emotion: numpy array, shape (), dtype <U5
+  emotion_class: numpy array, shape (), dtype int64
+
+===== Structure Statistics =====
+Total files analyzed: 96
+Files with 'embeddings' key: 0 (0.0%)
+Files with 'label' key: 96 (100.0%)
+Other keys found: emotion_class, emotion, wav2vec_features
+
+===== Recommendations =====
+ISSUE: No files contain the expected 'embeddings' key.
+Possible fixes:
+1. Check if the files use a different key name for the embeddings.
+2. Verify that WAV2VEC feature extraction was completed properly.
+3. Look for WAV2VEC features in other directories or servers.
+4. Re-run the WAV2VEC feature extraction process.

@@ -1,0 +1,2 @@
+FOUND_MODELS=/home/ec2-user/emotion_training/models/dynamic_padding_no_leakage/model_best.h5
+/home/ec2-user/emotion_training/models/dynamic_padding_no_leakage/final_model.h5

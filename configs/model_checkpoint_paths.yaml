@@ -1,0 +1,21 @@
+# Model checkpoint paths for multimodal humor fusion
+checkpoints:
+  # Text modality
+  xlm_roberta_v3:
+    model_path: "/home/ubuntu/humor_detection/training_logs_humor/xlm-roberta-large_v3_optimized/final_model"
+    tokenizer_path: "/home/ubuntu/humor_detection/training_logs_humor/xlm-roberta-large_v3_optimized/final_model/sentencepiece.bpe.model"
+    output_dim: 1024
+    
+  # Video modality 
+  smile_resnet18:
+    model_path: "/home/ubuntu/conjunction-train/training_logs_smile/smile_resnet18/checkpoints/smile-resnet18-epoch=02-val_acc=0.93.ckpt"
+    output_dim: 1  # Smile probability (can extract 512-D feature vector if needed)
+
+  # Audio modality
+  wavlm_laughter:
+    model_path: "/home/ubuntu/conjunction-train/checkpoints/laughter_wavlm_hf" # Path to the fine-tuned WavLM laughter model directory
+    output_dim: 768 # Check if this is correct for WavLM-Base+? Usually 768 or 1024 for Large. Assuming 768 for Base.
+
+datasets:
+  primary: "ur_funny"  # This is our main dataset with all three modalities
+  manifest_path: "datasets/manifests/humor/multimodal_humor.csv"

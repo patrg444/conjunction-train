@@ -1,0 +1,75 @@
+# AWS Training Setup Instructions
+
+These instructions will help you set up and run your emotion recognition model training on AWS.
+
+## 1. Launch your AWS EC2 Instance
+
+1. Login to the AWS Console with your account ID: 3240-3729-1814
+2. Navigate to EC2 and launch a new instance
+3. Select a Deep Learning AMI (Amazon Linux 2) with CUDA 11.x
+4. Choose one of these instance types:
+   - Standard: g4dn.xlarge (~$0.52/hour)
+   - High RAM: r5.2xlarge (8 vCPUs, 64GB RAM, ~$0.50/hour) with GPU
+   - Maximum performance: p3.8xlarge (4 V100 GPUs, 32 vCPUs, 244GB RAM, ~$12.24/hour)
+5. Allocate at least 100GB of storage
+6. Configure security groups to allow SSH access
+7. Launch the instance and save your key pair if creating a new one
+
+## 2. Upload Files to AWS
+
+From your local machine, upload the files to your EC2 instance:
+
+```bash
+# Replace with your key file and instance IP
+scp -i your-key.pem * ec2-user@your-instance-ip:~/
+```
+
+## 3. Set Up the AWS Environment
+
+SSH into your instance:
+
+```bash
+ssh -i your-key.pem ec2-user@your-instance-ip
+```
+
+Make the setup script executable and run it:
+
+```bash
+chmod +x aws-instance-setup.sh
+./aws-instance-setup.sh
+```
+
+## 4. Start Training
+
+Make the training script executable:
+
+```bash
+chmod +x train-on-aws.sh
+```
+
+Run the training with default parameters (learning rate: 1e-5, 50 epochs):
+
+```bash
+./train-on-aws.sh
+```
+
+Or customize with options:
+
+```bash
+./train-on-aws.sh --learning-rate 2e-5 --epochs 100 --batch-size 64
+```
+
+## 5. Monitor and Retrieve Results
+
+Training progress will be displayed in the console and saved to a log file.
+
+After training completes, download the results:
+
+```bash
+# From your local machine
+scp -i your-key.pem -r ec2-user@your-instance-ip:~/models/branched_6class ./
+```
+
+## IMPORTANT: Don't Forget to Stop Your Instance!
+
+When you're done, stop or terminate your instance to avoid unnecessary charges.

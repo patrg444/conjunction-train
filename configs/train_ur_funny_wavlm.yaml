@@ -1,0 +1,48 @@
+# Configuration for training a WavLM-Large audio-only model on the UR-FUNNY dataset
+
+# Model
+model_name: microsoft/wavlm-large # Use WavLM-Large for improved performance over wav2vec2-base
+freeze_feature_extractor: false # Fine-tune the feature extractor
+
+# Dataset
+train_manifest: datasets/manifests/humor/ur_funny_train_audio.csv
+val_manifest: datasets/manifests/humor/ur_funny_val_audio.csv
+dataset_root: datasets/ur_funny # Root directory for audio files (relative to project root)
+sample_rate: 16000 # WavLM expects 16kHz
+duration: 1.0 # Segment duration in seconds (should match pre-segmented clips)
+# Note: video_fps, video_frames, img_size are not used for audio-only training
+# text_model_name, max_text_len are not used for audio-only training
+
+# Training
+num_labels: 2 # Binary classification (humor/non-humor)
+max_epochs: 25 # UR-FUNNY is relatively small, 25-30 epochs should be sufficient
+batch_size: 16 # Adjust based on GPU memory
+learning_rate: 1e-5 # Standard fine-tuning LR for large models
+weight_decay: 0.01
+gradient_clip_val: 1.0
+accumulate_grad_batches: 1 # Increase if batch_size is small
+precision: 16 # Use mixed precision training if GPU supports it
+accelerator: gpu # Use GPU if available
+devices: 1 # Number of GPUs
+class_weights: auto # Automatically compute class weights from the training manifest
+
+# Callbacks
+early_stopping:
+  monitor: val_f1 # Monitor validation F1 score
+  patience: 5 # Stop if val_f1 doesn't improve for 5 epochs
+  mode: max # Maximize F1
+
+model_checkpoint:
+  monitor: val_f1 # Monitor validation F1 score
+  save_top_k: 1 # Save only the best model
+  mode: max # Save model with max F1
+  filename: 'best-{epoch:02d}-{val_f1:.4f}' # Checkpoint filename format
+
+# Logging
+logger:
+  class_path: lightning.pytorch.loggers.TensorBoardLogger
+  init_args:
+    save_dir: lightning_logs/ur_funny_wavlm_audio_only
+
+# Other
+seed: 42

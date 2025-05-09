@@ -1,0 +1,54 @@
+# Configuration for training an audio-only model on the TED-Humor dataset
+# using pre-extracted Covarep features
+
+# Model
+# Note: This configuration assumes a model architecture that can accept
+# pre-extracted features like Covarep, or a base model like WavLM
+# where the feature extraction step is bypassed or modified.
+# The actual model implementation will need to handle this.
+model_name: microsoft/wavlm-large # Placeholder, the actual model might be different
+freeze_feature_extractor: false # Relevant if using a pre-trained model
+
+# Dataset
+# Using custom dataset loading from pickle files, so manifests are not directly used here.
+# The dataset path points to the directory containing the pickle files.
+dataset_path: datasets/humor_datasets/ted_humor_sdk_v1/final_humor_sdk
+# train_manifest: N/A (using pickle files)
+# val_manifest: N/A (using pickle files)
+# dataset_root: N/A (using pickle files)
+# sample_rate: N/A (features are pre-extracted)
+# duration: N/A (features are pre-extracted)
+
+# Training
+num_labels: 2 # Binary classification (humor/non-humor)
+max_epochs: 30 # Adjust based on dataset size and convergence
+batch_size: 32 # Adjust based on GPU memory and dataset size
+learning_rate: 1e-4 # Initial learning rate, may need tuning
+weight_decay: 0.01
+gradient_clip_val: 1.0
+accumulate_grad_batches: 1 # Increase if batch_size is small
+precision: 16 # Use mixed precision training if GPU supports it
+accelerator: gpu # Use GPU if available
+devices: 1 # Number of GPUs
+class_weights: auto # Automatically compute class weights from the training data
+
+# Callbacks
+early_stopping:
+  monitor: val_f1 # Monitor validation F1 score
+  patience: 7 # Stop if val_f1 doesn't improve for 7 epochs
+  mode: max # Maximize F1
+
+model_checkpoint:
+  monitor: val_f1 # Monitor validation F1 score
+  save_top_k: 1 # Save only the best model
+  mode: max # Save model with max F1
+  filename: 'ted-humor-audio-best-{epoch:02d}-{val_f1:.4f}' # Checkpoint filename format
+
+# Logging
+logger:
+  class_path: lightning.pytorch.loggers.TensorBoardLogger
+  init_args:
+    save_dir: lightning_logs/ted_humor_audio_only
+
+# Other
+seed: 42

@@ -1,0 +1,8 @@
+dropout: 0.1
+freeze_epochs: 2
+hubert_name: facebook/hubert-base-ls960
+lr: 2.0e-05
+num_classes: 7
+pooling: mean
+total_steps: 160
+warmup_steps: 500
