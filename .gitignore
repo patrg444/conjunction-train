@@ -112,3 +112,7 @@ mf.sh
 
 # Removed sensitive/large data
 feature_verification_output/
+
+# Ignore personal verification frames (privacy)
+verification_frame*.jpg
+**/verification_frame*.jpg
