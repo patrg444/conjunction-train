@@ -1,0 +1,17 @@
+# QA Flags and Affect Index Configuration for Contact-Center Emotion Analytics
+
+desired_agent_emotions:
+  - calm
+  - joy
+
+negative_customer_emotions:
+  - anger
+  - frustration
+
+thresholds:
+  negative_burst: 0.40         # customer_angry > 0.40 for ≥ duration_sec
+  low_engagement: 0.60         # agent_neutral + agent_sad > 0.60
+  escalation_delta: 0.30       # rolling avg customer_angry - agent_calm > 0.30
+
+duration_sec: 3                # window for negative burst (seconds)
+escalation_window_sec: 10      # window for escalation risk (seconds)
