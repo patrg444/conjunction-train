@@ -20,29 +20,14 @@ RUN apt-get clean && \
 WORKDIR /app
 
 # ---------- Python deps ----------
-# FastAPI, Uvicorn, TorchAudio & TorchVision come with base image but
-# we ensure correct versions and add extras like opencv-python.
+COPY fusion_emotion_model_marketplace_package/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir \
-        fastapi==0.110.2 \
-        uvicorn[standard]==0.29.0 \
-        opencv-python-headless==4.10.0.82 \
-        boto3==1.34.102 \
-        pandas==2.2.2 \
-        scikit-learn==1.5.0 \
-        transformers==4.40.1 \
-        matplotlib==3.8.4 \
-        numpy==1.26.4 \
-        PyYAML==6.0.1 \
-        Pillow==10.3.0 \
-        pytorch-lightning==2.2.5 \
-        torchmetrics==1.4.0 \
-        seaborn==0.13.2
+    pip install --no-cache-dir -r /app/requirements.txt
 
 # ---------- Copy code ----------
 # Copy only what we need to speed up build; adjust if other modules are required.
 COPY fusion_emotion_model_marketplace_package/src/temp_corrected_train_fusion_model.py /app/
-COPY fusion_emotion_model_marketplace_package/deployment/inference_server.py /app/deployment/
+COPY fusion_emotion_model_marketplace_package/deployment/ /app/deployment/
 COPY deployment_scripts/serve_entrypoint.sh /app/deployment/serve_entrypoint.sh
 COPY fusion_emotion_model_marketplace_package/src/scripts/ /app/scripts/
 COPY fusion_emotion_model_marketplace_package/configs/ /app/configs/

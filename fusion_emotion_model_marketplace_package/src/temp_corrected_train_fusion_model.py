@@ -555,13 +555,14 @@ class FusionModel(nn.Module):
         self.video_embedding_size = self.video_embedder.embedding_size # Should be 512
 
         print(f"Loading Video (R3D-18) weights from checkpoint: {video_checkpoint_path}")
-        if not os.path.exists(video_checkpoint_path):
-            print(f"Error: Video Checkpoint file not found at {video_checkpoint_path}")
-            sys.exit(1)
-        video_checkpoint = torch.load(video_checkpoint_path, map_location='cpu')
-        video_state_dict = video_checkpoint.get('model_state_dict', video_checkpoint)
-        load_result_vid = self.video_embedder.load_state_dict(video_state_dict, strict=True)
-        print(f"Loaded Video Embedder state_dict. Load result: {load_result_vid}")
+        if video_checkpoint_path and os.path.exists(video_checkpoint_path):
+            video_checkpoint = torch.load(video_checkpoint_path, map_location='cpu')
+            video_state_dict = video_checkpoint.get('model_state_dict', video_checkpoint)
+            load_result_vid = self.video_embedder.load_state_dict(video_state_dict, strict=False)
+            print(f"Loaded Video Embedder state_dict. Load result: {load_result_vid}")
+        else:
+            print("Warning: Video checkpoint not provided or file not found. "
+                  "Proceeding with randomly initialized video backbone.")
         self.video_embedder.classifier = nn.Identity() # Remove final layer
         print("Freezing Video (R3D-18) backbone parameters.")
         for param in self.video_embedder.video_embedder.parameters():
@@ -575,27 +576,29 @@ class FusionModel(nn.Module):
             num_classes=num_classes # Use target num_classes initially
         )
         print(f"Loading Hubert SER weights from checkpoint: {hubert_checkpoint_path}")
-        if not os.path.exists(hubert_checkpoint_path):
-            print(f"Error: Hubert Checkpoint file not found at {hubert_checkpoint_path}")
-            sys.exit(1)
-
-        hub_checkpoint = torch.load(hubert_checkpoint_path, map_location='cpu')
-        # Check if it's a PL checkpoint with 'state_dict' key
-        if 'state_dict' in hub_checkpoint:
-            hub_state_dict = hub_checkpoint['state_dict']
+        if hubert_checkpoint_path and os.path.exists(hubert_checkpoint_path):
+            hub_checkpoint = torch.load(hubert_checkpoint_path, map_location='cpu')
         else:
-            hub_state_dict = hub_checkpoint # Assume it's just the state dict
+            print("Warning: Hubert checkpoint not provided or file not found. "
+                  "Proceeding with randomly initialized HuBERT branch.")
+            hub_checkpoint = None  # Skip loading
+        if hub_checkpoint is not None:
+            # Check if it's a PL checkpoint with 'state_dict' key
+            if 'state_dict' in hub_checkpoint:
+                hub_state_dict = hub_checkpoint['state_dict']
+            else:
+                hub_state_dict = hub_checkpoint # Assume it's just the state dict
 
-        # Adjust keys if needed (e.g., remove 'model.' prefix if saved directly)
-        # hub_state_dict = {k.replace("model.", ""): v for k, v in hub_state_dict.items()}
+            # Adjust keys if needed (e.g., remove 'model.' prefix if saved directly)
+            # hub_state_dict = {k.replace("model.", ""): v for k, v in hub_state_dict.items()}
 
-        # Load weights, potentially ignoring the final classifier if sizes mismatch
-        load_result_hub = self.hubert_ser.load_state_dict(hub_state_dict, strict=False)
-        print(f"Loaded Hubert SER state_dict. Load result (strict=False): {load_result_hub}")
-        if load_result_hub.missing_keys or load_result_hub.unexpected_keys:
-            print("  Note: Mismatched keys likely due to loading a pre-trained model. Check carefully.")
-            print(f"  Missing keys: {load_result_hub.missing_keys}")
-            print(f"  Unexpected keys: {load_result_hub.unexpected_keys}")
+            # Load weights, potentially ignoring the final classifier if sizes mismatch
+            load_result_hub = self.hubert_ser.load_state_dict(hub_state_dict, strict=False)
+            print(f"Loaded Hubert SER state_dict. Load result (strict=False): {load_result_hub}")
+            if load_result_hub.missing_keys or load_result_hub.unexpected_keys:
+                print("  Note: Mismatched keys likely due to loading a pre-trained model. Check carefully.")
+                print(f"  Missing keys: {load_result_hub.missing_keys}")
+                print(f"  Unexpected keys: {load_result_hub.unexpected_keys}")
 
         # Get feature dimension *before* the final FC layer of HubertSER
         self.hubert_feature_dim = self.hubert_ser.fc.in_features # Get dim before replacing
